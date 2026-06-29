@@ -1,0 +1,554 @@
+---
+# Management Server Preparation Playbook
+# Handles: Ansible installation, tools, SSH, user setup, environment
+# Target: The dedicated management server (not a K8s node)
+# Supports: Ubuntu 22.04 in air-gap
+
+- name: Management Server Preparation
+  hosts: localhost
+  connection: local
+  become: true
+  gather_facts: true
+  vars:
+    deploy_user: deploy
+    deploy_user_ssh_key: "{{ lookup('file', lookup('env', 'SSH_PUB_KEY') | default('~/.ssh/id_ed25519.pub', true)) }}"
+    nexus_url: "{{ lookup('env', 'NEXUS_URL') | default('https://nexus.internal.lan', true) }}"
+    kube_version: "1.29.0"
+    helm_version: "3.14.0"
+    containerd_install: false  # management server doesn't need containerd
+
+  pre_tasks:
+    - name: Verify OS is Ubuntu 22.04
+      ansible.builtin.assert:
+        that:
+          - ansible_distribution == "Ubuntu"
+          - ansible_distribution_major_version == "22"
+        fail_msg: "This playbook only supports Ubuntu 22.04. Found: {{ ansible_distribution }} {{ ansible_distribution_version }}"
+
+    - name: Generate SSH key for deploy user
+      ansible.builtin.user:
+        name: "{{ deploy_user }}"
+        groups: sudo,adm,systemd-journal
+        append: true
+        create_home: true
+        shell: /bin/bash
+      register: user_created
+
+    - name: Generate SSH keypair
+      community.crypto.openssh_keypair:
+        path: /home/{{ deploy_user }}/.ssh/id_ed25519
+        type: ed25519
+        owner: "{{ deploy_user }}"
+        group: "{{ deploy_user }}"
+        mode: '0600'
+      register: ssh_key
+
+    - name: Set authorized key from existing public key
+      ansible.posix.authorized_key:
+        user: "{{ deploy_user }}"
+        key: "{{ deploy_user_ssh_key }}"
+        state: present
+
+    - name: Allow deploy user passwordless sudo
+      ansible.builtin.copy:
+        dest: /etc/sudoers.d/{{ deploy_user }}
+        content: "{{ deploy_user }} ALL=(ALL) NOPASSWD:ALL"
+        mode: '0440'
+        validate: /usr/sbin/visudo -csf %s
+
+  tasks:
+    # === System Packages ===
+    - name: Configure Nexus apt repository
+      ansible.builtin.copy:
+        dest: /etc/apt/sources.list.d/nexus.list
+        content: |
+          deb {{ nexus_url }}/repository/apt-ubuntu-hosted/ jammy main restricted universe multiverse
+          deb {{ nexus_url }}/repository/apt-ubuntu-hosted/ jammy-updates main restricted universe multiverse
+          deb {{ nexus_url }}/repository/apt-ubuntu-hosted/ jammy-security main restricted universe multiverse
+        mode: '0644'
+      when: nexus_url != ""
+
+    - name: Remove default Ubuntu sources (air-gap)
+      ansible.builtin.file:
+        path: /etc/apt/sources.list
+        state: absent
+      when: nexus_url != ""
+
+    - name: Update apt cache
+      ansible.builtin.apt:
+        update_cache: yes
+        cache_valid_time: 3600
+
+    - name: Install essential system packages
+      ansible.builtin.apt:
+        name:
+          - apt-transport-https
+          - ca-certificates
+          - curl
+          - gnupg
+          - lsb-release
+          - software-properties-common
+          - bash-completion
+          - vim
+          - htop
+          - tmux
+          - git
+          - jq
+          - tree
+          - unzip
+          - zip
+          - net-tools
+          - dnsutils
+          - iputils-ping
+          - tcpdump
+          - strace
+          - rsync
+          - wget
+          - chrony
+          - auditd
+          - apparmor
+          - apparmor-utils
+          - ufw
+        state: present
+
+    # === SSH Hardening ===
+    - name: Harden SSH configuration
+      ansible.builtin.copy:
+        dest: /etc/ssh/sshd_config
+        content: |
+          # SSH Server Configuration - Hardened for Management Server
+          Protocol 2
+          Port 22
+
+          # Authentication
+          PermitRootLogin no
+          PasswordAuthentication no
+          PermitEmptyPasswords no
+          ChallengeResponseAuthentication no
+          PubkeyAuthentication yes
+          AuthenticationMethods publickey
+
+          # Ciphers
+          KexAlgorithms curve25519-sha256,curve25519-sha256@libssh.org
+          Ciphers chacha20-poly1305@openssh.com,aes256-gcm@openssh.com,aes128-gcm@openssh.com,aes256-ctr
+          MACs hmac-sha2-512-etm@openssh.com,hmac-sha2-256-etm@openssh.com
+
+          # Limits
+          MaxAuthTries 3
+          MaxSessions 10
+          ClientAliveInterval 300
+          ClientAliveCountMax 2
+          LoginGraceTime 60
+
+          # Features
+          X11Forwarding no
+          AllowTcpForwarding yes
+          AllowAgentForwarding no
+          PermitTunnel no
+          LogLevel VERBOSE
+
+          # Allow management user
+          AllowUsers deploy
+        mode: '0644'
+        validate: /usr/sbin/sshd -t -f %s
+      notify: Restart SSH
+
+    # === NTP (Chrony) ===
+    - name: Configure chrony for air-gap
+      ansible.builtin.copy:
+        dest: /etc/chrony/chrony.conf
+        content: |
+          # Air-gap NTP configuration
+          server ntp1.internal.lan iburst prefer
+          server ntp2.internal.lan iburst
+          driftfile /var/lib/chrony/drift
+          makestep 1.0 3
+          rtcsync
+          logdir /var/log/chrony
+          maxupdateskew 100.0
+          bindcmdaddress 127.0.0.1
+          local stratum 10
+          allow 10.0.0.0/8
+        mode: '0644'
+      notify: Restart chrony
+
+    # === DNS ===
+    - name: Configure DNS resolution
+      ansible.builtin.copy:
+        dest: /etc/resolv.conf
+        content: |
+          nameserver 10.0.0.2
+          nameserver 10.0.0.3
+          search internal.lan cluster.local
+          options timeout:2 attempts:3
+        mode: '0644'
+
+    # === Security Limits ===
+    - name: Configure security limits
+      ansible.builtin.copy:
+        dest: /etc/security/limits.d/99-management.conf
+        content: |
+          * soft nofile 655360
+          * hard nofile 655360
+          * soft nproc 655360
+          * hard nproc 655360
+          * soft memlock unlimited
+          * hard memlock unlimited
+          deploy soft nofile 655360
+          deploy hard nofile 655360
+        mode: '0644'
+
+    # === UFW Firewall ===
+    - name: Configure UFW defaults
+      community.general.ufw:
+        direction: "{{ item.direction }}"
+        policy: "{{ item.policy }}"
+      loop:
+        - { direction: incoming, policy: deny }
+        - { direction: outgoing, policy: allow }
+
+    - name: Allow SSH from internal network
+      community.general.ufw:
+        rule: allow
+        port: '22'
+        proto: tcp
+        src: 10.0.0.0/8
+
+    - name: Allow Cockpit from internal network
+      community.general.ufw:
+        rule: allow
+        port: '9090'
+        proto: tcp
+        src: 10.0.0.0/8
+
+    - name: Enable UFW
+      community.general.ufw:
+        state: enabled
+
+    # === Auditd ===
+    - name: Configure auditd rules
+      ansible.builtin.copy:
+        dest: /etc/audit/rules.d/management-audit.rules
+        content: |
+          -D
+          -b 8192
+          -f 1
+          -w /etc/ssh/sshd_config -p wa -k ssh-config
+          -w /etc/passwd -p wa -k identity
+          -w /etc/group -p wa -k identity
+          -w /etc/shadow -p wa -k identity
+          -w /etc/sudoers -p wa -k sudoers
+          -w /etc/sudoers.d/ -p wa -k sudoers
+          -w /usr/bin/ansible -p wa -k ansible
+          -w /usr/bin/kubectl -p wa -k kubectl
+          -a always,exit -F arch=b64 -S setuid -S setgid -S setreuid -S setregid -k privilege_escalation
+          -e 2
+        mode: '0600'
+      notify: Restart auditd
+
+    # === Python & Ansible ===
+    - name: Install Python packages
+      ansible.builtin.apt:
+        name:
+          - python3
+          - python3-pip
+          - python3-venv
+        state: present
+
+    - name: Create Ansible virtual environment
+      ansible.builtin.command:
+        cmd: python3 -m venv /home/{{ deploy_user }}/ansible-venv
+        creates: /home/{{ deploy_user }}/ansible-venv/bin/activate
+      become_user: "{{ deploy_user }}"
+
+    - name: Install Ansible in venv
+      ansible.builtin.pip:
+        name:
+          - ansible-core>=2.16,<2.17
+          - ansible-lint
+          - yamllint
+          - molecule
+          - jmespath
+          - netaddr
+          - requests
+        virtualenv: /home/{{ deploy_user }}/ansible-venv
+      become_user: "{{ deploy_user }}"
+
+    - name: Install Ansible collections
+      ansible.builtin.command:
+        cmd: |
+          source /home/{{ deploy_user }}/ansible-venv/bin/activate && \
+          ansible-galaxy collection install \
+            kubernetes.core \
+            community.general \
+            community.docker \
+            community.crypto \
+            ansible.posix \
+            ansible.netcommon
+        creates: /home/{{ deploy_user }}/ansible-venv/lib/python3/site-packages/ansible_collections/kubernetes/core
+      become_user: "{{ deploy_user }}"
+
+    # === kubectl ===
+    - name: Download kubectl
+      ansible.builtin.get_url:
+        url: "https://dl.k8s.io/release/v{{ kube_version }}/bin/linux/amd64/kubectl"
+        dest: /usr/local/bin/kubectl
+        mode: '0755'
+
+    # === Helm ===
+    - name: Download Helm
+      ansible.builtin.unarchive:
+        src: "https://get.helm.sh/helm-v{{ helm_version }}-linux-amd64.tar.gz"
+        dest: /usr/local/bin
+        extra_opts:
+          - --strip-components=1
+          - --wildcards
+          - "*/helm"
+        remote_src: true
+
+    # === ctx (kubectx/kubens) ===
+    - name: Clone kubectx repository
+      ansible.builtin.git:
+        repo: https://github.com/ahmetb/kubectx
+        dest: /opt/kubectx
+        version: master
+
+    - name: Install kubectx symlink
+      ansible.builtin.file:
+        src: /opt/kubectx/kubectx
+        dest: /usr/local/bin/kubectx
+        state: link
+
+    - name: Install kubens symlink
+      ansible.builtin.file:
+        src: /opt/kubectx/kubens
+        dest: /usr/local/bin/kubens
+        state: link
+
+    # === k9s ===
+    - name: Get latest k9s version
+      ansible.builtin.uri:
+        url: https://api.github.com/repos/derailed/k9s/releases/latest
+        return_content: true
+      register: k9s_release
+
+    - name: Download k9s
+      ansible.builtin.unarchive:
+        src: "https://github.com/derailed/k9s/releases/download/{{ k9s_release.json.tag_name }}/k9s_Linux_amd64.tar.gz"
+        dest: /usr/local/bin
+        extra_opts:
+          - k9s
+        remote_src: true
+
+    # === Stern ===
+    - name: Get latest stern version
+      ansible.builtin.uri:
+        url: https://api.github.com/repos/stern/stern/releases/latest
+        return_content: true
+      register: stern_release
+
+    - name: Download stern
+      ansible.builtin.unarchive:
+        src: "https://github.com/stern/stern/releases/download/{{ stern_release.json.tag_name }}/stern_{{ stern_release.json.tag_name | regex_replace('v', '') }}_linux_amd64.tar.gz"
+        dest: /usr/local/bin
+        extra_opts:
+          - stern
+        remote_src: true
+
+    # === ArgoCD CLI ===
+    - name: Download ArgoCD CLI
+      ansible.builtin.get_url:
+        url: "https://github.com/argoproj/argo-cd/releases/latest/download/argocd-linux-amd64"
+        dest: /usr/local/bin/argocd
+        mode: '0755'
+
+    # === Velero CLI ===
+    - name: Get latest Velero version
+      ansible.builtin.uri:
+        url: https://api.github.com/repos/vmware-tanzu/velero/releases/latest
+        return_content: true
+      register: velero_release
+
+    - name: Download Velero CLI
+      ansible.builtin.unarchive:
+        src: "https://github.com/vmware-tanzu/velero/releases/download/{{ velero_release.json.tag_name }}/velero-{{ velero_release.json.tag_name }}-linux-amd64.tar.gz"
+        dest: /tmp/velero
+        remote_src: true
+
+    - name: Install Velero CLI
+      ansible.builtin.copy:
+        src: "/tmp/velero/velero-{{ velero_release.json.tag_name }}-linux-amd64/velero"
+        dest: /usr/local/bin/velero
+        mode: '0755'
+        remote_src: true
+
+    # === Cockpit (Optional) ===
+    - name: Install Cockpit
+      ansible.builtin.apt:
+        name:
+          - cockpit
+          - cockpit-storaged
+          - cockpit-networkmanager
+        state: present
+      when: install_cockpit | default(false) | bool
+
+    - name: Enable Cockpit
+      ansible.builtin.systemd:
+        name: cockpit.socket
+        state: started
+        enabled: true
+      when: install_cockpit | default(false) | bool
+
+    # === Environment Setup ===
+    - name: Create project directories
+      ansible.builtin.file:
+        path: "/home/{{ deploy_user }}/{{ item }}"
+        state: directory
+        owner: "{{ deploy_user }}"
+        group: "{{ deploy_user }}"
+        mode: '0755'
+      loop:
+        - ansible/inventory
+        - ansible/playbooks
+        - ansible/roles
+        - projects
+        - projects/manifests
+        - projects/helm-values
+        - projects/backups
+        - .kube
+
+    - name: Deploy bashrc for deploy user
+      ansible.builtin.copy:
+        dest: /home/{{ deploy_user }}/.bashrc
+        content: |
+          # Management Server Environment
+
+          # Aliases
+          alias k='kubectl'
+          alias kg='kubectl get'
+          alias kd='kubectl describe'
+          alias ke='kubectl edit'
+          alias kx='kubectl exec -it'
+          alias kl='kubectl logs -f'
+          alias ktx='kubectx'
+          alias kns='kubens'
+          alias h='helm'
+          alias s='stern'
+          alias a='argocd'
+          alias v='velero'
+
+          # Ansible
+          alias ap='ansible-playbook'
+          alias ag='ansible-galaxy'
+          alias ansible-env='source ~/ansible-venv/bin/activate'
+
+          # Quick cluster access
+          alias ssh-mgmt='ssh deploy@master-1'
+          alias ssh-app='ssh deploy@app-master-1'
+
+          # Kubeconfig
+          export KUBECONFIG=~/.kube/config:~/.kube/mgmt-config:~/.kube/app-config
+
+          # Path
+          export PATH=$PATH:~/.local/bin
+
+          # Prompt
+          parse_git_branch() {
+              git branch 2> /dev/null | sed -e '/^[^*]/d' -e 's/* \(.*\)/ (\1)/'
+          }
+          export PS1='\[\033[01;32m\]\u@\h\[\033[00m\]:\[\033[01;34m\]\w\[\033[33m\]$(parse_git_branch)\[\033[00m\]\$ '
+
+          # Bash completion
+          source <(kubectl completion bash)
+          source <(helm completion bash)
+          source <(kubectx completion bash 2>/dev/null)
+          source <(kubens completion bash 2>/dev/null)
+        owner: "{{ deploy_user }}"
+        group: "{{ deploy_user }}"
+        mode: '0644'
+
+    - name: Deploy SSH config for deploy user
+      ansible.builtin.copy:
+        dest: /home/{{ deploy_user }}/.ssh/config
+        content: |
+          Host *
+              User deploy
+              IdentityFile ~/.ssh/id_ed25519
+              StrictHostKeyChecking no
+              ServerAliveInterval 60
+              ServerAliveCountMax 3
+
+          Host master-1
+              HostName 10.0.0.11
+
+          Host master-2
+              HostName 10.0.0.12
+
+          Host master-3
+              HostName 10.0.0.13
+
+          Host worker-1
+              HostName 10.0.0.20
+
+          Host worker-2
+              HostName 10.0.0.21
+
+          Host vip
+              HostName 10.0.0.100
+
+          Host harbor
+              HostName 10.0.0.200
+
+          Host nexus
+              HostName 10.0.0.201
+        owner: "{{ deploy_user }}"
+        group: "{{ deploy_user }}"
+        mode: '0600'
+
+    - name: Deploy Ansible config
+      ansible.builtin.copy:
+        dest: /home/{{ deploy_user }}/ansible/ansible.cfg
+        content: |
+          [defaults]
+          inventory = ./inventory
+          remote_tmp = /tmp/.ansible/tmp
+          local_tmp = /tmp/.ansible/tmp
+          host_key_checking = False
+          retry_files_enabled = False
+          gathering = smart
+          fact_caching = jsonfile
+          fact_caching_connection = /tmp/ansible_facts_cache
+          fact_caching_timeout = 3600
+          stdout_callback = yaml
+          timeout = 30
+          forks = 20
+
+          [privilege_escalation]
+          become = True
+          become_method = sudo
+          become_user = root
+          become_ask_pass = False
+
+          [ssh_connection]
+          pipelining = True
+          ssh_args = -o ControlMaster=auto -o ControlPersist=60s -o PreferredAuthentications=publickey
+          control_path_dir = /tmp/.ansible/cp
+          control_path = %%h-%%r
+        owner: "{{ deploy_user }}"
+        group: "{{ deploy_user }}"
+        mode: '0644'
+
+  handlers:
+    - name: Restart SSH
+      ansible.builtin.systemd:
+        name: sshd
+        state: restarted
+
+    - name: Restart chrony
+      ansible.builtin.systemd:
+        name: chrony
+        state: restarted
+
+    - name: Restart auditd
+      ansible.builtin.shell: service auditd restart
+      changed_when: false
