@@ -1,635 +1,784 @@
-# GitLab Deployment & CI/CD Integration Guide
+# GitLab Deployment Guide
 
-## Overview
-
-GitLab serves as the source code management and CI/CD platform in the air-gapped environment. It integrates with ArgoCD for GitOps-based deployments and hosts all infrastructure-as-code repositories.
-
-> **Air-Gap Note**: GitLab must be deployed from offline packages. All CI/CD runners must use Harbor as their container registry and Nexus for dependency resolution.
+> GitLab CE/EE deployment: Native, Container, and Kubernetes
 
 ---
 
-## GitLab Deployment
+## 1. Deployment Methods Overview
 
-### Architecture Options
+| Method | Complexity | Best For | HA Support |
+|--------|-----------|----------|------------|
+| **Native (deb/rpm)** | Low-Medium | Single server, traditional ops | Via external DB + NFS |
+| **Container (docker-compose)** | Medium | Quick setup, reproducible | Via Docker Swarm/K8s |
+| **Kubernetes (Helm)** | Medium-High | Cloud-native, auto-scaling | Native via StatefulSets |
+| **Docker Swarm** | Medium | Lightweight orchestration | Native via services |
 
-| Option | Description | Pros | Cons |
-|--------|------------|------|------|
-| **Docker Compose** | Single-node, all-in-one | Simple, low resource | Not HA |
-| **Omnibus Package** | Single-node, bare-metal | Easy to manage | Not HA |
-| **Helm Chart** | On K8s (mgmt cluster) | HA possible, K8s-native | More complex |
-| **Reference Architecture** | Multi-node | Full HA | High resource needs |
+---
 
-**Recommendation for this environment**: Omnibus Package on the Ops Linux server (single-node with backup). For HA, deploy via Helm on management cluster.
+## 2. Native Installation (Ubuntu 22.04)
 
-### Prerequisites
-
-| Requirement | Minimum | Recommended |
-|-------------|---------|-------------|
-| CPU | 4 cores | 8 cores |
-| RAM | 8 GB | 16 GB |
-| Disk | 100 GB | 500 GB (SSD) |
-| OS | Ubuntu 22.04 | Ubuntu 22.04 |
-| PostgreSQL | Built-in | External (Ceph-backed) |
-| Redis | Built-in | External (recommended for 500+ users) |
-
-### Method 1: Omnibus Package (Recommended for Air-Gap)
-
-#### Download on Internet-Connected Machine
+### 2.1 Install Dependencies
 
 ```bash
-#!/usr/bin/env bash
-# offline-download-gitlab.sh
-# Run on internet-connected machine
+sudo apt-get update
+sudo apt-get install -y curl openssh-server ca-certificates tzdata perl \
+  postfix git
 
-GITLAB_VERSION="17.8.0"
-DOWNLOAD_DIR="/tmp/gitlab-offline"
-
-mkdir -p "$DOWNLOAD_DIR"
-
-# Download GitLab CE omnibus package
-wget -O "$DOWNLOAD_DIR/gitlab-ce_${GITLAB_VERSION}-ce.0_amd64.deb" \
-  "https://packages.gitlab.com/gitlab/gitlab-ce/packages/ubuntu/jammy/gitlab-ce_${GITLAB_VERSION}-ce.0_amd64.deb/download.deb"
-
-# Download runner binary
-wget -O "$DOWNLOAD_DIR/gitlab-runner" \
-  "https://gitlab-runner-downloads.s3.amazonaws.com/latest/binaries/gitlab-runner-linux-amd64"
-
-# Download Helm chart for GitLab (if deploying on K8s)
-helm repo add gitlab https://charts.gitlab.io/
-helm repo update
-helm pull gitlab/gitlab --version "8.8.0" --destination "$DOWNLOAD_DIR/"
-
-echo "All GitLab artifacts downloaded to $DOWNLOAD_DIR"
-ls -lh "$DOWNLOAD_DIR/"
+# Configure postfix as "Internet Site" during install
 ```
 
-#### Install in Air-Gap
+### 2.2 Install GitLab via DEB Package
+
+#### From GitLab Official Repository
 
 ```bash
-#!/usr/bin/env bash
-# deploy-gitlab.sh
-set -euo pipefail
+# Add official GitLab DEB repository
+curl https://packages.gitlab.com/install/repositories/gitlab/gitlab-ce/script.deb.sh | sudo bash
 
-GITLAB_VERSION="${GITLAB_VERSION:-17.8.0}"
-GITLAB_URL="${GITLAB_URL:-https://gitlab.internal}"
-GITLAB_HOSTNAME="${GITLAB_HOSTNAME:-gitlab.internal}"
+# Install GitLab CE (or ee for Enterprise Edition)
+sudo EXTERNAL_URL="https://gitlab.internal" apt-get install -y gitlab-ce
 
-# Install from local deb (already transferred from internet-connected machine)
-dpkg -i "/tmp/gitlab-offline/gitlab-ce_${GITLAB_VERSION}-ce.0_amd64.deb"
+# For GitLab EE, use:
+# sudo EXTERNAL_URL="https://gitlab.internal" apt-get install -y gitlab-ee
 
 # Configure GitLab
-cat > /etc/gitlab/gitlab.rb <<EOF
-# External URL
-external_url '${GITLAB_URL}'
+sudo gitlab-ctl reconfigure
+```
 
-# Disable unnecessary services (minimal for air-gap)
-prometheus_monitoring['enable'] = false
-grafana['enable'] = false
+#### From Nexus Repository (Air-Gap)
 
-# PostgreSQL tuning
-postgresql['shared_buffers'] = "2GB"
-postgresql['max_connections'] = 400
+```bash
+# Ensure Nexus repository for GitLab is set up
+# Nexus Repository → repository/gitlab/gitlab-ce-latest.deb
+wget https://nexus.internal/repository/gitlab/gitlab-ce_16.0.0-ee_amd64.deb
+sudo dpkg -i gitlab-ce_16.0.0-ee_amd64.deb
 
-# Redis tuning
-redis['maxmemory'] = "1gb"
+# Configure GitLab
+sudo EXTERNAL_URL="https://gitlab.internal" sudo gitlab-ctl reconfigure
+```
 
-# Backup configuration
-gitlab_rails['backup_path'] = "/var/opt/gitlab/backups"
-gitlab_rails['backup_keep_time'] = 604800  # 7 days
+### 2.3 Initial Configuration
 
-# Disable signup (security)
-gitlab_rails['gitlab_signup_enabled'] = false
-
-# SMTP (if internal mail server available)
-gitlab_rails['smtp_enable'] = true
-gitlab_rails['smtp_address'] = "mail.internal"
-gitlab_rails['smtp_port'] = 25
-gitlab_rails['smtp_domain'] = "internal"
-
-# Package repository (disable, use Nexus)
-# CI runners will use Nexus for pip/apt/docker
-
-# Container Registry (optional - Harbor is primary)
-registry_external_url '${GITLAB_URL}:5050'
-registry['enable'] = false  # Use Harbor instead
-
-# Mattermost (optional, disable if not needed)
-mattermost['enable'] = false
-
-# Pages (optional)
-gitlab_pages['enable'] = false
-EOF
-
-# Reconfigure GitLab
-gitlab-ctl reconfigure
-
-# Wait for services to start
-echo "Waiting for GitLab to become ready..."
-for i in $(seq 1 30); do
-  if curl -skf "${GITLAB_URL}/-/readiness" > /dev/null 2>&1; then
-    echo "GitLab is ready!"
-    break
-  fi
-  echo "  Attempt $i/30..."
-  sleep 10
-done
-
-# Retrieve initial root password
-echo "Initial root password:"
+```bash
+# Check initial admin password (valid for 24 hours after install)
 cat /etc/gitlab/initial_root_password
 
-echo ""
-echo "GitLab deployed at: ${GITLAB_URL}"
-echo "Please change the root password immediately after first login."
+# Access GitLab URL: https://gitlab.internal
+# NOTE: Change default root password immediately after first login.
+#      Default username is 'root'.
 ```
 
-### Method 2: Helm Chart on Management Cluster
+**⚠️ Default Authentication: GitLab creates the 'root' user with the password from `/etc/gitlab/initial_root_password` during the first reconfigure.**
 
-```bash
-#!/usr/bin/env bash
-# deploy-gitlab-k8s.sh
-set -euo pipefail
+### 2.4 External PostgreSQL (Recommended)
 
-NAMESPACE="gitlab"
-HELM_REPO="https://charts.gitlab.io/"
-CHART_VERSION="8.8.0"
-
-# Add GitLab Helm repo (from Nexus Helm proxy in air-gap)
-helm repo add gitlab "${NEXUS_URL}/repository/helm-proxy/" || \
-  helm repo add gitlab "$HELM_REPO"
-helm repo update
-
-# Create namespace
-kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -
-
-# Deploy cert-manager first (prerequisite)
-helm upgrade --install cert-manager jetstack/cert-manager \
-  --namespace cert-manager \
-  --set installCRDs=true \
-  --set image.repository="${HARBOR_URL}/jetstack/cert-manager-controller" \
-  --wait
-
-# Deploy GitLab
-helm upgrade --install gitlab gitlab/gitlab \
-  --namespace "$NAMESPACE" \
-  --version "$CHART_VERSION" \
-  -f helm-values/gitlab-values.yaml \
-  --timeout 30m \
-  --wait
-
-echo "GitLab deployed on Kubernetes"
-kubectl get pods -n "$NAMESPACE"
-```
-
-#### GitLab Helm Values (helm-values/gitlab-values.yaml)
-
-```yaml
-# gitlab-values.yaml
-global:
-  hosts:
-    domain: internal
-    hostSuffix: ""
-    gitlab:
-      name: gitlab.internal
-    registry:
-      name: registry.internal
-    minio:
-      enabled: false  # Using Harbor/Nexus instead
-  
-  # Air-gap: Use Harbor registry
-  imageRegistry: harbor.internal/gitlab
-  
-  # Ingress configuration
-  ingress:
-    configureCertmanager: true
-    tls:
-      enabled: true
-  
-  # PostgreSQL
-  psql:
-    host: postgresql.gitlab.svc.cluster.local
-    password:
-      secret: gitlab-postgresql-password
-  
-  # Redis
-  redis:
-    host: redis-master.gitlab.svc.cluster.local
-  
-  # MinIO disabled (using Harbor/Ceph RGW)
-  minio:
-    enabled: false
-  
-  # Object storage (Ceph RGW or MinIO)
-  objectStorage:
-    enabled: true
-    proxy_download: true
-    connection:
-      secret: gitlab-object-storage
-      key: connection
-    artifacts:
-      bucket: gitlab-artifacts
-    lfs:
-      bucket: gitlab-lfs
-    uploads:
-      bucket: gitlab-uploads
-    packages:
-      bucket: gitlab-packages
-    terraformState:
-      bucket: gitlab-terraform
-    ciSecureFiles:
-      bucket: gitlab-ci-secure-files
-    externalDiffs:
-      bucket: gitlab-mr-diffs
-    dependencyProxy:
-      bucket: gitlab-dependency-proxy
-
-# GitLab Runner
-gitlab-runner:
-  install: true
-  rbac:
-    create: true
-  runners:
-    privileged: true
-    config: |
-      [[runners]]
-        [runners.kubernetes]
-          image = "harbor.internal/library/ubuntu:22.04"
-          poll_timeout = 600
-        [runners.kubernetes.node_selector]
-          "node-role.kubernetes.io/worker" = "true"
-
-# PostgreSQL (if not external)
-postgresql:
-  install: true
-  persistence:
-    storageClass: cephfs
-    size: 50Gi
-
-# Redis
-redis:
-  install: true
-  persistence:
-    storageClass: cephfs
-    size: 10Gi
-
-# Prometheus disabled (using standalone kube-prometheus-stack)
-prometheus:
-  install: false
-
-# Grafana disabled
-grafana:
-  enabled: false
-```
-
----
-
-## GitLab Configuration
-
-### Initial Setup
-
-```bash
-# Set root password
-GITLAB_URL="https://gitlab.internal"
-ROOT_PASS=$(cat /etc/gitlab/initial_root_password | grep "Password:" | awk '{print $2}')
-
-# Create personal access token
-curl -sk --request POST "${GITLAB_URL}/api/v4/personal_access_tokens" \
-  --header "PRIVATE-TOKEN: ${ROOT_PASS}" \
-  --data "name=setup-token&scopes[]=api&scopes[]=read_repository&scopes[]=write_repository"
-
-# Create groups for organizing projects
-for group in infrastructure applications operations platform monitoring; do
-  curl -sk --request POST "${GITLAB_URL}/api/v4/groups" \
-    --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
-    --data "name=${group}&path=${group}&visibility=internal"
-done
-
-# Create infrastructure projects
-for project in k8s-manifests helm-values ansible-playbooks scripts; do
-  curl -sk --request POST "${GITLAB_URL}/api/v4/projects" \
-    --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
-    --data "name=${project}&namespace_id=1&visibility=internal"
-done
-```
-
-### LDAP/AD Integration
+Edit `/etc/gitlab/gitlab.rb`:
 
 ```ruby
-# /etc/gitlab/gitlab.rb - Add LDAP configuration
+# Disable bundled PostgreSQL
+postgresql['enable'] = false
 
+# Configure external PostgreSQL
+gitlab_rails['db_adapter'] = 'postgresql'
+gitlab_rails['db_encoding'] = 'unicode'
+gitlab_rails['db_host'] = 'postgres.internal'
+gitlab_rails['db_port'] = 5432
+gitlab_rails['db_username'] = 'gitlab'
+gitlab_rails['db_password'] = 'gitlab_password'
+gitlab_rails['db_database'] = 'gitlab_production'
+```
+
+### 2.5 External Redis
+
+```ruby
+redis['enable'] = false
+
+gitlab_rails['redis_host'] = 'redis.internal'
+gitlab_rails['redis_port'] = 6379
+gitlab_rails['redis_password'] = 'redis_password'
+```
+
+### 2.6 GitLab Container Registry
+
+```ruby
+registry_external_url 'https://gitlab.internal:5050'
+
+registry['enable'] = true
+registry['registry_http_addr'] = '0.0.0.0:5000'
+
+# Registry SSL
+registry_nginx['ssl_certificate'] = '/etc/gitlab/ssl/gitlab.internal.crt'
+registry_nginx['ssl_certificate_key'] = '/etc/gitlab/ssl/gitlab.internal.key'
+```
+
+### 2.7 GitLab Pages
+
+```ruby
+pages_external_url 'https://gitlab.internal:9090'
+gitlab_pages['enable'] = true
+pages_nginx['enable'] = true
+```
+
+### 2.8 Object Storage (Git LFS, Artifacts, Uploads)
+
+```ruby
+git_data_dirs({
+  "default" => {
+    "path" => "/var/opt/gitlab/git-data/repositories"
+  },
+  "alternative" => {
+    "path" => "/mnt/storage/git-data/repositories"
+  }
+})
+
+# S3-compatible storage (MinIO/Ceph RGW)
+gitlab_rails['object_store']['enabled'] = true
+gitlab_rails['object_store']['proxy_download'] = true
+gitlab_rails['object_store']['storage_options'] = {
+  'provider' => 'AWS',
+  'region' => 'us-east-1',
+  'aws_access_key_id' => 'minio_access_key',
+  'aws_secret_access_key' => 'minio_secret_key',
+  'endpoint' => 'https://minio.internal',
+  'path_style' => true
+}
+gitlab_rails['object_store']['connection'] = {
+  'provider' => 'AWS',
+  'region' => 'us-east-1',
+  'aws_access_key_id' => 'minio_access_key',
+  'aws_secret_access_key' => 'minio_secret_key',
+  'endpoint' => 'https://minio.internal:9000',
+  'path_style' => true
+}
+```
+
+### 2.9 GitLab CI/CD Runners
+
+```bash
+# Install GitLab Runner on separate server(s)
+curl -L https://packages.gitlab.com/install/repositories/runner/gitlab-runner/script.deb.sh | sudo bash
+sudo apt-get install -y gitlab-runner
+
+# Register Runner
+sudo gitlab-runner register \
+  --non-interactive \
+  --url "https://gitlab.internal" \
+  --registration-token "<REGISTRATION_TOKEN>" \
+  --executor "docker" \
+  --docker-image "docker:latest" \
+  --description "docker-runner" \
+  --docker-privileged \
+  --docker-volumes "/certs/client"
+
+# List registered runners
+sudo gitlab-runner list
+sudo gitlab-runner verify
+```
+
+### 2.10 LDAP/AD Integration (Optional)
+
+```ruby
 gitlab_rails['ldap_enabled'] = true
 gitlab_rails['ldap_servers'] = {
   'main' => {
-    'label' => 'Corporate AD',
-    'host' => 'ad.internal',
+    'label' => 'LDAP',
+    'host' => 'ldap.internal',
     'port' => 636,
     'uid' => 'sAMAccountName',
-    'method' => 'ssl',
-    'bind_dn' => 'CN=gitlab,OU=ServiceAccounts,DC=internal',
-    'password' => '***',
+    'bind_dn' => 'CN=gitlab,OU=Service Accounts,DC=internal,DC=lan',
+    'password' => 'ldap_password',
+    'encryption' => 'simple_tls',
+    'verify_certificates' => true,
+    'tls_options' => {
+      'ca_file' => '/etc/gitlab/ssl/ldap-ca.crt'
+    },
+    'timeout' => 10,
     'active_directory' => true,
-    'base' => 'DC=internal',
-    'user_filter' => '(memberOf=CN=GitLabUsers,OU=Groups,DC=internal)',
-    'attributes' => {
-      'username' => ['sAMAccountName'],
-      'email' => ['mail'],
-      'name' => 'displayName',
-      'first_name' => 'givenName',
-      'last_name' => 'sn'
-    }
+    'allow_username_or_email_login' => false,
+    'block_auto_created_users' => false,
+    'base' => 'OU=Users,DC=internal,DC=lan',
+    'user_filter' => '(memberOf=CN=GitLab_Users,OU=Groups,DC=internal,DC=lan)'
   }
 }
 ```
 
----
-
-## GitLab Runner Configuration
-
-### Shell Runner (on Ops Linux Server)
+### 2.11 Service Health
 
 ```bash
-#!/usr/bin/env bash
-# setup-gitlab-runner.sh
+sudo gitlab-ctl status
+sudo gitlab-rake gitlab:check
+sudo gitlab-rake gitlab:env:info
+sudo gitlab-ctl tail  # live logs
+```
 
-RUNNER_URL="https://gitlab.internal"
-RUNNER_TOKEN="${RUNNER_TOKEN:-}"  # Get from GitLab UI: Admin > Runners
+---
 
-# Download runner binary (already in air-gap from offline bundle)
-cp /tmp/gitlab-offline/gitlab-runner /usr/local/bin/
-chmod +x /usr/local/bin/gitlab-runner
+## 3. Container Deployment (Docker Compose)
 
-# Create runner user
-useradd --comment 'GitLab Runner' --create-home gitlab-runner --shell /bin/bash
+### 3.1 Architecture
 
-# Install and register
-gitlab-runner install --user=gitlab-runner --working-directory=/home/gitlab-runner
-gitlab-runner register \
+```
+┌─────────────────────────────────────────────────────┐
+│ Docker Compose Stack │
+│ ┌───────────┐ ┌──────────┐ ┌──────────────────────┐ │
+│ │ GitLab │ │ Redis │ │ PostgreSQL │ │
+│ │ Ports: │ │ 6379 │ │ 5432 │ │
+│ │ 80,443,22│ │ │ │ │ │
+│ └───────────┘ └──────────┘ └──────────────────────┘ │
+│ ┌────────────────────────────────────────────────┐ │
+│ │ Shared Volume │ │
+│ │ /mnt/ → data/, config/, logs/ │ │
+│ └────────────────────────────────────────────────┘ │
+└─────────────────────────────────────────────────────┘
+```
+
+### 3.2 Create Directory Structure
+
+```bash
+sudo mkdir -p /opt/gitlab/{config,data,logs}
+sudo mkdir -p /opt/gitlab-runner/config
+sudo mkdir -p /opt/postgres/data
+sudo mkdir -p /opt/redis/data
+sudo mkdir -p /opt/minio/data
+
+sudo chown -R 1000:1000 /opt/gitlab*
+```
+
+### 3.3 docker-compose.yml
+
+```yaml
+version: '3.8'
+
+services:
+  # PostgreSQL
+  postgres:
+    image: nexus.internal/repository/docker/library/postgres:15-alpine
+    container_name: gitlab-postgres
+    restart: always
+    environment:
+      POSTGRES_USER: gitlab
+      POSTGRES_PASSWORD: gitlab_password
+      POSTGRES_DB: gitlab_production
+    volumes:
+      - /opt/postgres/data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gitlab"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - gitlab-net
+
+  # Redis
+  redis:
+    image: nexus.internal/repository/docker/library/redis:7-alpine
+    container_name: gitlab-redis
+    restart: always
+    command: >
+      redis-server
+      --requirepass redis_password
+      --maxmemory 512mb
+      --maxmemory-policy allkeys-lru
+    volumes:
+      - /opt/redis/data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "redis_password", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - gitlab-net
+
+  # GitLab
+  gitlab:
+    image: nexus.internal/repository/docker/gitlab/gitlab-ce:latest
+    container_name: gitlab
+    restart: always
+    hostname: 'gitlab.internal'
+    environment:
+      GITLAB_OMNIBUS_CONFIG: |
+        external_url 'https://gitlab.internal:8443'
+        registry_external_url 'https://gitlab.internal:5050'
+        gitlab_rails['gitlab_shell_ssh_port'] = 2224
+        # Database
+        postgresql['enable'] = false
+        gitlab_rails['db_adapter'] = 'postgresql'
+        gitlab_rails['db_encoding'] = 'unicode'
+        gitlab_rails['db_host'] = 'postgres'
+        gitlab_rails['db_port'] = 5432
+        gitlab_rails['db_username'] = 'gitlab'
+        gitlab_rails['db_password'] = 'gitlab_password'
+        gitlab_rails['db_database'] = 'gitlab_production'
+        # Redis
+        redis['enable'] = false
+        gitlab_rails['redis_host'] = 'redis'
+        gitlab_rails['redis_port'] = 6379
+        gitlab_rails['redis_password'] = 'redis_password'
+        # Registry
+        registry['enable'] = true
+        registry['registry_http_addr'] = '0.0.0.0:5050'
+        registry_nginx['listen_port'] = 5050
+        registry_nginx['listen_https'] = false
+        # Pages
+        pages_external_url 'https://gitlab.internal:9090'
+        gitlab_pages['enable'] = true
+        pages_nginx['enable'] = true
+        # Git data
+        git_data_dirs({
+          "default" => {
+            "path" => "/var/opt/gitlab/git-data/repositories"
+          }
+        })
+        # SMTP
+        gitlab_rails['smtp_enable'] = true
+        gitlab_rails['smtp_address'] = 'smtp.internal'
+        gitlab_rails['smtp_port'] = 25
+        # Backup
+        gitlab_rails['backup_keep_time'] = 604800  # 7 days
+        # SSH
+        gitlab_rails['gitlab_shell_ssh_port'] = 2224
+    ports:
+      - '8443:443'
+      - '8080:80'
+      - '2224:22'
+      - '5050:5050'
+      - '9090:9090'
+    volumes:
+      - /opt/gitlab/config:/etc/gitlab
+      - /opt/gitlab/data:/var/opt/gitlab
+      - /opt/gitlab/logs:/var/log/gitlab
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/-/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 300s
+    networks:
+      - gitlab-net
+
+  # GitLab Runner
+  gitlab-runner:
+    image: gitlab/gitlab-runner:latest
+    container_name: gitlab-runner
+    restart: always
+    volumes:
+      - /opt/gitlab-runner/config:/etc/gitlab-runner
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      - gitlab
+    networks:
+      - gitlab-net
+
+networks:
+  gitlab-net:
+    driver: bridge
+```
+
+### 3.4 Advanced Port Configuration
+
+```yaml
+# Use non-default ports (avoid conflicts)
+services:
+  gitlab:
+    ports:
+      - '8443:443'     # GitLab HTTPS (default: 443)
+      - '8080:80'      # GitLab HTTP (default: 80)
+      - '2224:22'      # Git SSH (default: 22)
+      - '5050:5050'    # Container Registry (custom)
+      - '9090:9090'    # GitLab Pages (custom)
+      - '9091:9091'    # GitLab Workhorse
+```
+
+### 3.5 Start the Stack
+
+```bash
+cd /opt/gitlab
+docker-compose up -d
+docker-compose logs -f gitlab
+```
+
+### 3.6 Initial Setup
+
+```bash
+# Get initial root password
+docker-compose exec gitlab grep 'Password:' /etc/gitlab/initial_root_password
+
+# Register runner
+docker-compose exec gitlab-runner gitlab-runner register \
   --non-interactive \
-  --url "$RUNNER_URL" \
-  --token "$RUNNER_TOKEN" \
-  --executor "shell" \
-  --description "shell-runner-ops" \
-  --tag-list "shell,ops,deploy" \
-  --run-untagged="false"
+  --url "https://gitlab.internal:8443" \
+  --registration-token "<TOKEN>" \
+  --executor "docker" \
+  --docker-image "docker:latest" \
+  --docker-privileged \
+  --docker-volumes "/var/run/docker.sock:/var/run/docker.sock"
 
-# Configure Nexus as package source for runner environment
-cat > /home/gitlab-runner/.pip/pip.conf <<EOF
-[global]
-index-url = http://nexus:8081/repository/pypi-group/simple
-trusted-host = nexus
-EOF
-
-# Start runner
-gitlab-runner start
+# Check status
+sudo docker-compose exec gitlab gitlab-ctl status
+sudo docker-compose exec gitlab gitlab-rake gitlab:check SANITIZE=true
 ```
 
-### Kubernetes Runner (on Management Cluster)
-
-```yaml
-# gitlab-runner-k8s-values.yaml
-gitlab-runner:
-  gitlabUrl: https://gitlab.internal/
-  runnerRegistrationToken: "***"
-
-  rbac:
-    create: true
-  
-  runners:
-    privileged: true
-    config: |
-      [[runners]]
-        [runners.kubernetes]
-          namespace = "gitlab-runner"
-          image = "harbor.internal/library/ubuntu:22.04"
-          cpu_request = "500m"
-          memory_request = "512Mi"
-          cpu_limit = "2"
-          memory_limit = "2Gi"
-          poll_timeout = 600
-          [runners.kubernetes.node_selector]
-            "node-role.kubernetes.io/worker" = "true"
-    
-  # Air-gap: Use Harbor registry
-  image: harbor.internal/gitlab/gitlab-runner:ubuntu-v17.8.0
-  
-  # Cache
-  cache:
-    secretName: gitlab-runner-cache
-    cacheType: s3
-    s3:
-      serverAddress: http://minio.internal:9000
-      bucketName: gitlab-runner-cache
-      insecure: true
-```
-
----
-
-## CI/CD Pipeline Templates
-
-### Docker Build Pipeline (Air-Gap)
-
-```yaml
-# .gitlab-ci.yml - Docker build with Harbor registry
-stages:
-  - build
-  - test
-  - deploy
-
-variables:
-  HARBOR_URL: "harbor.internal"
-  HARBOR_PROJECT: "applications"
-  IMAGE_TAG: "$CI_COMMIT_SHORT_SHA"
-
-docker-build:
-  stage: build
-  tags:
-    - shell
-  script:
-    - docker build -t ${HARBOR_URL}/${HARBOR_PROJECT}/${CI_PROJECT_NAME}:${IMAGE_TAG} .
-    - docker push ${HARBOR_URL}/${HARBOR_PROJECT}/${CI_PROJECT_NAME}:${IMAGE_TAG}
-    - docker tag ${HARBOR_URL}/${HARBOR_PROJECT}/${CI_PROJECT_NAME}:${IMAGE_TAG} \
-        ${HARBOR_URL}/${HARBOR_PROJECT}/${CI_PROJECT_NAME}:latest
-    - docker push ${HARBOR_URL}/${HARBOR_PROJECT}/${CI_PROJECT_NAME}:latest
-  only:
-    - main
-
-deploy-argocd:
-  stage: deploy
-  tags:
-    - shell
-  script:
-    # Update ArgoCD application manifest with new image tag
-    - sed -i "s|image:.*${CI_PROJECT_NAME}:.*|image: ${HARBOR_URL}/${HARBOR_PROJECT}/${CI_PROJECT_NAME}:${IMAGE_TAG}|" \
-        k8s/deployment.yaml
-    - git config user.name "GitLab CI"
-    - git config user.email "ci@gitlab.internal"
-    - git add k8s/deployment.yaml
-    - git commit -m "Update ${CI_PROJECT_NAME} to ${IMAGE_TAG}"
-    - git push origin main
-  only:
-    - main
-  when: manual
-```
-
-### ArgoCD Sync Pipeline
-
-```yaml
-# .gitlab-ci.yml - ArgoCD sync trigger
-stages:
-  - sync
-
-argocd-sync:
-  stage: sync
-  tags:
-    - shell
-  script:
-    - argocd login argocd.internal --grpc-web --username admin --password "$ARGOCD_PASSWORD"
-    - argocd app sync ${CI_PROJECT_NAME} --prune
-    - argocd app wait ${CI_PROJECT_NAME} --health
-  only:
-    - main
-  when: manual
-```
-
----
-
-## Integrating with ArgoCD
-
-### Connect ArgoCD to GitLab
-
-```yaml
-# ArgoCD repository connection
-apiVersion: v1
-kind: Secret
-metadata:
-  name: gitlab-repo
-  namespace: argocd
-  labels:
-    argocd.argoproj.io/secret-type: repository
-stringData:
-  type: git
-  url: https://gitlab.internal/infrastructure/k8s-manifests.git
-  username: argocd-robot
-  password: "***"
----
-# ArgoCD application that reads from GitLab
-apiVersion: argoproj.io/v1alpha1
-kind: Application
-metadata:
-  name: workload-app
-  namespace: argocd
-spec:
-  project: default
-  source:
-    repoURL: https://gitlab.internal/infrastructure/k8s-manifests.git
-    targetRevision: main
-    path: apps/workload/overlays/production
-  destination:
-    server: https://kubernetes.default.svc
-    namespace: workload
-  syncPolicy:
-    automated:
-      prune: true
-      selfHeal: true
-```
-
----
-
-## GitLab Backup & Restore
-
-### Automated Backup
+### 3.7 Service Health in a Container Environment
 
 ```bash
-# /etc/cron.d/gitlab-backup
-# Daily backup at 2 AM
-0 2 * * * root /opt/gitlab/bin/gitlab-backup create CRON=1
+# Check GitLab health
+curl -k https://gitlab.internal:8443/-/health
+curl -k https://gitlab.internal:8443/-/live
+curl -k https://gitlab.internal:8443/-/ready
 
-# Backup configuration separately
-0 2 * * * root cp /etc/gitlab/gitlab.rb /var/opt/gitlab/backups/gitlab.rb.$(date +\%F)
-0 2 * * * root cp /etc/gitlab/gitlab-secrets.json /var/opt/gitlab/backups/gitlab-secrets.json.$(date +\%F)
+# Check individual services
+docker-compose exec gitlab gitlab-ctl status
+docker-compose exec redis redis-cli -a redis_password ping
+docker-compose exec postgres pg_isready -U gitlab
+
+# Logs
+docker-compose exec gitlab gitlab-ctl tail
+docker-compose logs -f --tail=100 gitlab
 ```
 
-### Backup to Ceph RGW / MinIO
-
-```ruby
-# /etc/gitlab/gitlab.rb
-# Upload backups to S3 (Ceph RGW or MinIO)
-
-gitlab_rails['backup_upload_connection'] = {
-  'provider' => 'AWS',
-  'region' => 'us-east-1',
-  'aws_access_key_id' => '***',
-  'aws_secret_access_key' => '***',
-  'endpoint' => 'http://rgw.internal:8080',
-  'force_path_style' => true
-}
-gitlab_rails['backup_upload_remote_directory'] = 'gitlab-backups'
-```
-
-### Restore Procedure
+### 3.8 Backups in Container Deployment
 
 ```bash
-# Stop services
-gitlab-ctl stop puma
-gitlab-ctl stop sidekiq
+# Create backup
+docker-compose exec gitlab gitlab-backup create
 
-# Restore from backup
-BACKUP_TIMESTAMP=$(ls /var/opt/gitlab/backups/ | tail -1 | sed 's/_gitlab_backup.tar//')
-gitlab-backup restore BACKUP=$BACKUP_TIMESTAMP
+# Backup repositories and uploads
+docker-compose exec gitlab tar -czf /var/opt/gitlab/backups/uploads.tar.gz /var/opt/gitlab/git-rails/uploads/
 
-# Restart
-gitlab-ctl restart
-gitlab-rake gitlab:check SANITIZE=true
+# Download backup
+docker-compose cp gitlab:/var/opt/gitlab/backups/*.tar ./
+
+# Restore from backup (stop all services first)
+docker-compose stop gitlab
+docker-compose run --rm gitlab gitlab-backup restore BACKUP=<timestamp>
+docker-compose start gitlab
 ```
 
 ---
 
-## GitLab High Availability (Optional)
+## 4. Kubernetes Deployment (Helm)
 
-For production HA on the management cluster:
+### 4.1 Prerequisites
+
+```bash
+# Add GitLab Helm repo
+helm repo add gitlab https://charts.gitlab.io
+helm repo update
+
+# Create namespace
+kubectl create namespace gitlab
+
+# Create SSL secret
+kubectl create secret tls gitlab-tls \
+  --namespace gitlab \
+  --cert=/path/to/gitlab.crt \
+  --key=/path/to/gitlab.key
+```
+
+### 4.2 values.yaml for Helm Install
 
 ```yaml
-# GitLab HA on K8s with Helm
-# Requires: external PostgreSQL, external Redis, object storage
-
+# values-gitlab.yaml
 global:
-  # Anti-affinity for pod distribution
-  pod:
-    antiAffinityLabels:
-      - topology.kubernetes.io/zone
+  hosts:
+    domain: gitlab.internal
+    https: true
+    external: true
 
-# Gitaly (Git storage) - 3 replicas
-gitaly:
+  ingress:
+    configureCertmanager: true
+    tls:
+      secretName: gitlab-tlab
+    annotations:
+      nginx.ingress.kubernetes.io/proxy-body-size: "500m"
+      nginx.ingress.kubernetes.io/ssl-redirect: "true"
+
+  gitlab:
+    host: gitlab.internal
+    https: true
+    time_zone: UTC
+
+  # PostgreSQL
+  psql:
+    host: postgres-service.gitlab.svc.cluster.local
+    port: 5432
+    username: gitlab
+    password:
+      secret: gitlab-db-secret
+      key: password
+    database: gitlab_production
+
+  # Redis
+  redis:
+    host: redis-service.gitlab.svc.cluster.local
+    port: 6379
+    password:
+      secret: gitlab-redis-secret
+      key: password
+
+  # Persistent storage (Ceph RBD or NFS)
   persistence:
-    storageClass: cephfs
+    enabled: true
+    storageClass: ceph-rbd
     size: 100Gi
-  resources:
-    requests:
-      cpu: "1"
-      memory: "4Gi"
+    accessMode: ReadWriteOnce
 
-# Webservice (Puma) - 3 replicas
-webservice:
-  minReplicas: 3
-  maxReplicas: 5
-  persistence:
+  # External MinIO
+  minio:
     enabled: false
+  object_store:
+    enabled: true
+    connection:
+      secret: gitlab-object-storage
+      key: connection
 
-# Sidekiq - 3 replicas
-sidekiq:
-  minReplicas: 3
-  maxReplicas: 5
+# GitLab components
+gitlab:
+  # Unicorn/Puma (web handler)
+  unicorn:
+    minReplicas: 2
+    maxReplicas: 5
+    resources:
+      requests:
+        cpu: 500m
+        memory: 1Gi
+      limits:
+        cpu: 2
+        memory: 4Gi
+
+  # Sidekiq (background jobs)
+  sidekiq:
+    minReplicas: 1
+    maxReplicas: 3
+    resources:
+      requests:
+        cpu: 200m
+        memory: 512Mi
+      limits:
+        cpu: 1
+        memory: 2Gi
+
+  # GitLab Shell (SSH handling)
+  gitlab-shell:
+    enabled: true
+
+  # Workhorse
+  workhorse:
+    enabled: true
+
+  # Registry
+  registry:
+    enabled: true
+    ingress:
+      enabled: true
+      tls:
+        enabled: true
+        secretName: registry-tlab
+    storage:
+      secret: registry-s3
+      key: connection.yaml
+
+  # Pages
+  pages:
+    enabled: true
+
+  # Gitaly (Git RPC)
+  gitaly:
+    enabled: true
+    persistence:
+      size: 50Gi
+      storageClass: ceph-rbd
+
+# Monitoring
+monitoring:
+  enabled: true
+```
+
+### 4.3 Install via Helm
+
+```bash
+# Create secrets for external services
+kubectl create secret generic gitlab-db-secret \
+  --namespace gitlab \
+  --from-literal=password='gitlab_password'
+
+kubectl create secret generic gitlab-redis-secret \
+  --namespace gitlab \
+  --from-literal=password='redis_password'
+
+# Install GitLab
+helm install gitlab gitlab/gitlab \
+  --namespace gitlab \
+  --version 7.1.0 \
+  --values values-gitlab.yaml \
+  --timeout 10m
+
+# Watch pods
+kubectl get pods -n gitlab -w
+kubectl get ingress -n gitlab
+```
+
+### 4.4 Access GitLab
+
+```bash
+# Get initial root password
+kubectl get secret gitlab-gitlab-initial-root-password -n gitlab \
+  -o jsonpath='{.data.password}' | base64 -d
+```
+
+**⚠️ Default Authentication: In Kubernetes Helm deployments, the initial root password is stored in the Secret `gitlab-gitlab-initial-root-password`. See GitLab docs for the username and how to retrieve it.**
+
+### 4.5 High Availability Configuration
+
+```yaml
+# values-ha.yaml
+global:
+  hosts:
+    domain: gitlab.internal
+
+  # PostgreSQL (external or Patroni)
+  psql:
+    host: postgres-cluster.gitlab.svc.cluster.local
+    port: 5432
+    username: gitlab
+    password:
+      secret: gitlab-db-secret
+      key: password
+    database: gitlab_production
+    preparedStatements: false
+
+  # Redis (external Sentinel/Cluster)
+  redis:
+    host: redis-cluster.gitlab.svc.cluster.local
+    port: 6379
+
+gitlab:
+  unicorn:
+    minReplicas: 3
+    maxReplicas: 10
+
+  sidekiq:
+    minReplicas: 2
+    maxReplicas: 5
+
+  gitaly:
+    enabled: true
+    persistence:
+      size: 100Gi
+      storageClass: ceph-rbd
+
+    # Multiple Gitaly instances for HA
+    hpa:
+      minReplicas: 2
+      maxReplicas: 5
+      targetCPUUtilizationPercentage: 75
+
+# Sentinel for Redis HA
+sentinel:
+  enabled: true
+
+# Object storage (S3/MinIO)
+object_store:
+  enabled: true
+  connection:
+    secret: gitlab-object-storage
+    key: connection
+
+# Configure for Ceph storage
+certmanager:
+  install: true
+
+ingress:
+  class: nginx
+  tls:
+    enabled: true
+```
+
+### 4.6 Post-Install Tasks
+
+```bash
+# Check all pods are running
+kubectl get pods -n gitlab
+
+# Check GitLab install status
+helm status gitlab -n gitlab
+
+# Get initial root password
+kubectl get secret gitlab-gitlab-initial-root-password -n gitlab -ojson
+
+# Watch readiness
+kubectl wait --for=condition=ready pod -l app=unicorn -n gitlab --timeout=300s
+kubectl wait --for=condition=ready pod -l app=sidekiq -n gitlab --timeout=300s
 ```
 
 ---
 
-## Troubleshooting
+## 5. Configuration Comparison
 
-| Issue | Cause | Solution |
-|-------|-------|----------|
-| Runner cannot connect | TLS cert not trusted | Copy internal CA to `/etc/gitlab-runner/certs/` |
-| Pipeline fails on `docker build` | Docker not installed on runner | Install Docker on shell runner host |
-| ArgoCD cannot clone repo | Secret misconfigured | Verify repo credentials in ArgoCD |
-| Backup upload fails | S3 credentials wrong | Verify RGW/MinIO credentials |
-| 502 errors | Puma workers not ready | Increase `puma['worker_processes']` |
-| Disk full | Logs/artifacts accumulation | Configure cleanup policies |
+| Setting | Native (deb) | Container (compose) | Kubernetes (Helm) |
+|---------|-------------|--------------------|--------------------|
+| **GitLab URL** | `EXTERNAL_URL` | `external_url` | `global.hosts.domain` |
+| **Git SSH Port** | `gitlab_shell_ssh_port` | `gitlab_shell_ssh_port` | `global.ssh.port` |
+| **Registry URL** | `registry_external_url` | `registry_external_url` | `registry.ingress` |
+| **Database** | `gitlab_rails['db_*']` | `GITLAB_OMNIBUS_CONFIG` | `global.psql` |
+| **Redis** | `gitlab_rails['redis_*']` | `GITLAB_OMNIBUS_CONFIG` | `global.redis` |
+| **Backups** | `gitlab-backup create` | `docker exec` | CronJob |
+| **Scaling** | Manual | Docker Compose replicas | HPA |
+| **Self-healing** | systemd | restart policies | ReplicaSets |
+| **Logs** | `gitlab-ctl tail` | `docker logs` | Prometheus + Grafana |
+
+---
+
+## 6. Service Health (All Deployment Methods)
+
+```bash
+# ─── Native ───
+sudo gitlab-ctl status
+sudo gitlab-ctl tail postgresql
+sudo gitlab-ctl tail redis
+sudo gitlab-ctl unicorn
+
+# ─── Container ───
+sudo docker-compose exec gitlab gitlab-ctl status
+sudo docker-compose exec postgres pg_isready
+sudo docker-compose exec redis redis-cli ping
+
+# ─── Kubernetes ───
+kubectl get pods -n gitlab
+kubectl logs -n gitlab -l app=unicorn --tail=50
+kubectl top pod -n gitlab
+kubectl exec -it gitlab-postgres-0 -n gitlab -- pg_isready
+kubectl exec -it gitlab-redis-0 -n gitlab -- redis-cli ping
+```
+
+### Health Check URLs
+
+```bash
+# GitLab web
+curl -k https://gitlab.internal/-/health
+curl -k https://gitlab.internal/-/live
+curl -k https://gitlab.internal/-/ready
+
+# Container Registry
+curl -k https://gitlab.internal:5050/v2/
+
+# Git SSH
+ssh -T git@gitlab.internal -p 2224
+```
+
+---
+
+## 7. Recommendations
+
+| Method | Recommendation |
+|--------|---------------|
+| **Native** | Best if GitLab is the only service on the dedicated server — simplest to manage, no container overhead. |
+| **Container** | Best for rapid deployment, reproducible setups, or when migrating from/to Kubernetes. Good balance of simplicity and flexibility. |
+| **Kubernetes** | Best if GitLab must be part of the cloud-native ecosystem — auto-scaling, self-healing, consistent monitoring. Requires Ceph or NFS for storage. |
+
+**For your air-gapped deployment:** I recommend **Container (docker-compose)** start. It's the fastest to deploy, easy to reconfigure (ports, volumes), and provides all features including registry and pages. Move to Kubernetes later if you need auto-scaling.
