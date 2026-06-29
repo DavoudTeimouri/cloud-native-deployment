@@ -329,7 +329,107 @@ kubectl get --raw /metrics | grep feature_gate
 
 ---
 
-## 7. Air-Gap Upgrade Checklist
+## 7. OS Upgrade (Ubuntu 22.04 → 24.04 or in-place dist-upgrade)
+
+### 7.1 Pre-OS-Upgrade Checks
+
+```bash
+# Check current version
+lsb_release -a
+cat /etc/os-release
+
+# Backup critical configs
+sudo tar -czf /backup/etc-backup-$(date +%Y%m%d).tar.gz /etc/ /var/lib/kubelet/ /var/lib/etcd/
+
+# Disable auto-updates
+sudo systemctl stop unattended-upgrades
+sudo systemctl disable unattended-upgrades
+
+# Note installed packages
+dpkg --get-selections > /backup/packages-before-upgrade.txt
+
+# Check free space
+df -h /
+apt-get check
+```
+
+### 7.2 In-Place OS Upgrade (Recommended: Same Version)
+
+```bash
+# Update existing packages
+sudo apt-get update
+sudo apt-get upgrade -y
+sudo apt-get dist-upgrade -y
+
+# Install pending kernel
+sudo apt-get install -y linux-generic
+
+# Reboot
+sudo reboot
+```
+
+### 7.3 Major Version Upgrade (22.04 → 24.04)
+
+> **WARNING**: Perform on management server first, then K8s control plane (one node at a time), then workers.
+
+```bash
+# 1. Upgrade manager tool
+sudo apt-get install -y update-manager-core
+
+# 2. Check upgrade availability
+sudo do-release-upgrade -c
+
+# 3. Drain the node
+kubectl drain <node> --ignore-daemonsets --delete-emptydir-data
+
+# 4. Perform upgrade
+sudo do-release-upgrade
+
+# 5. Reboot
+sudo reboot
+
+# 6. Verify
+lsb_release -a
+kubectl uncordon <node>
+
+# 7. Verify kubelet starts
+systemctl status kubelet
+```
+
+### 7.4 Post-OS-Upgrade Verification
+
+```bash
+# Verify OS version
+lsb_release -a
+
+# Verify kernel
+uname -r
+
+# Verify services
+systemctl is-active kubelet
+systemctl is-active containerd
+systemctl is-active chrony
+
+# Verify packages
+dpkg --get-selections | diff /backup/packages-before-upgrade.txt -
+
+# Verify swap still disabled
+free -h | grep Swap
+
+# Verify kernel modules
+lsmod | grep -E "br_netfilter|overlay"
+
+# Verify sysctl
+sysctl net.ipv4.ip_forward
+sysctl net.bridge.bridge-nf-call-iptables
+
+# Verify node health
+kubectl get node <node-name>
+```
+
+---
+
+## 8. Air-Gap Upgrade Checklist
 
 - [ ] Download all new container images to local machine
 - [ ] Push images to Harbor registry
