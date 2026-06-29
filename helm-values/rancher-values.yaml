@@ -1,0 +1,69 @@
+# Rancher Helm Values - Management Cluster
+# Reference: https://ranchermanager.docs.rancher.com/how-to-guides/new-user-guides/helm-charts
+
+hostname: rancher.mgmt.internal
+
+replicas: 3
+
+# Air-gap: Use Harbor registry
+rancherImage: harbor.internal/rancher/rancher
+systemDefaultRegistry: harbor.internal
+
+# Use cert-manager for TLS
+certmanager:
+  enabled: true
+
+# Private registry configuration
+privateRegistry:
+  enabled: true
+  url: harbor.internal
+  insecure: false
+  # CA certificate for Harbor (create secret first):
+  # kubectl -n cattle-system create secret generic harbor-ca --from-file=ca.crt=/path/to/harbor-ca.crt
+
+# Use bundled system charts (air-gap)
+useBundledSystemChart: true
+
+# Bootstrap password
+bootstrapPassword: "Rancher@Admin2024!"
+
+# Resources
+resources:
+  requests:
+    cpu: 500m
+    memory: 1Gi
+  limits:
+    cpu: "2"
+    memory: 4Gi
+
+# Anti-affinity for HA
+affinity:
+  podAntiAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        podAffinityTerm:
+          labelSelector:
+            matchExpressions:
+              - key: app
+                operator: In
+                values:
+                  - rancher
+          topologyKey: kubernetes.io/hostname
+
+# Node selector
+nodeSelector:
+  node-role.kubernetes.io/worker: "true"
+
+# Tolerations
+tolerations: []
+
+# Ingress
+ingress:
+  enabled: true
+  ingressClassName: nginx
+
+# Additional CA (for Harbor, Nexus, GitLab)
+# additionalCa: |
+#   -----BEGIN CERTIFICATE-----
+#   ...
+#   -----END CERTIFICATE-----

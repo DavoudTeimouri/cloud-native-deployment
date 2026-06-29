@@ -1,0 +1,383 @@
+---
+# Deploy Platform Components (cert-manager, Gatekeeper, NGINX Ingress, MetalLB, Rancher, ArgoCD)
+# Usage: ansible-playbook -i inventory/<cluster>/hosts.yml playbooks/platform-deploy.yml --tags <component>
+
+- name: Deploy cert-manager
+  hosts: kube_control_plane[0]
+  become: true
+  gather_facts: false
+  tags: [cert-manager]
+  vars:
+    cert_manager_namespace: cert-manager
+    cert_manager_chart_version: "1.16.2"
+    harbor_url: "{{ lookup('env', 'HARBOR_URL') | default('harbor.internal', true) }}"
+    helm_repo_url: "{{ lookup('env', 'NEXUS_HELM_URL') | default('http://nexus.internal:8081/repository/helm-hosted/', true) }}"
+
+  tasks:
+    - name: Create cert-manager namespace
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: "{{ cert_manager_namespace }}"
+            labels:
+              certmanager.k8s.io/disable-validation: "true"
+
+    - name: Add Jetstack Helm repo (or Nexus mirror)
+      kubernetes.core.helm_repository:
+        name: jetstack
+        repo_url: "{{ helm_repo_url }}"
+
+    - name: Deploy cert-manager via Helm
+      kubernetes.core.helm:
+        name: cert-manager
+        chart_ref: jetstack/cert-manager
+        chart_version: "{{ cert_manager_chart_version }}"
+        release_namespace: "{{ cert_manager_namespace }}"
+        values:
+          installCRDs: true
+          image:
+            repository: "{{ harbor_url }}/jetstack/cert-manager-controller"
+          webhook:
+            image:
+              repository: "{{ harbor_url }}/jetstack/cert-manager-webhook"
+          cainjector:
+            image:
+              repository: "{{ harbor_url }}/jetstack/cert-manager-cainjector"
+          startupapicheck:
+            image:
+              repository: "{{ harbor_url }}/jetstack/cert-manager-startupapicheck"
+        wait: true
+        timeout: 5m
+
+    - name: Create ClusterIssuer (self-signed CA for air-gap)
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: cert-manager.io/v1
+          kind: ClusterIssuer
+          metadata:
+            name: selfsigned-issuer
+          spec:
+            selfSigned: {}
+
+- name: Deploy Gatekeeper
+  hosts: kube_control_plane[0]
+  become: true
+  gather_facts: false
+  tags: [gatekeeper]
+  vars:
+    gatekeeper_namespace: gatekeeper-system
+    gatekeeper_chart_version: "3.17.1"
+    harbor_url: "{{ lookup('env', 'HARBOR_URL') | default('harbor.internal', true) }}"
+
+  tasks:
+    - name: Create Gatekeeper namespace
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: "{{ gatekeeper_namespace }}"
+
+    - name: Deploy Gatekeeper via Helm
+      kubernetes.core.helm:
+        name: gatekeeper
+        chart_ref: gatekeeper/gatekeeper
+        chart_version: "{{ gatekeeper_chart_version }}"
+        release_namespace: "{{ gatekeeper_namespace }}"
+        values:
+          image:
+            repository: "{{ harbor_url }}/openpolicyagent/gatekeeper"
+            release: v3.17.1
+          audit:
+            logLevel: INFO
+            interval: 300
+          replicas: 3
+          psp:
+            enabled: false
+          emitAdmissionEvents: true
+          emitAuditEvents: true
+        wait: true
+        timeout: 5m
+
+- name: Deploy NGINX Ingress Controller
+  hosts: kube_control_plane[0]
+  become: true
+  gather_facts: false
+  tags: [ingress]
+  vars:
+    ingress_namespace: ingress-nginx
+    ingress_chart_version: "4.12.1"
+    harbor_url: "{{ lookup('env', 'HARBOR_URL') | default('harbor.internal', true) }}"
+
+  tasks:
+    - name: Create Ingress namespace
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: "{{ ingress_namespace }}"
+
+    - name: Deploy NGINX Ingress via Helm
+      kubernetes.core.helm:
+        name: ingress-nginx
+        chart_ref: ingress-nginx/ingress-nginx
+        chart_version: "{{ ingress_chart_version }}"
+        release_namespace: "{{ ingress_namespace }}"
+        values:
+          controller:
+            kind: DaemonSet
+            hostNetwork: true
+            hostPort:
+              enabled: true
+            service:
+              type: ClusterIP
+            image:
+              repository: "{{ harbor_url }}/ingress-nginx/controller"
+              tag: "v1.12.1"
+            admissionWebhooks:
+              patch:
+                image:
+                  repository: "{{ harbor_url }}/ingress-nginx/kube-webhook-certgen"
+            config:
+              proxy-buffer-size: "16k"
+              proxy-buffers-number: "4"
+              use-forwarded-headers: "true"
+              compute-full-forwarded-for: "true"
+              use-proxy-protocol: "false"
+            metrics:
+              enabled: true
+              serviceMonitor:
+                enabled: true
+            resources:
+              requests:
+                cpu: 250m
+                memory: 512Mi
+              limits:
+                cpu: "1"
+                memory: 1Gi
+            tcp:
+              # TCP services configuration (key = port, value = namespace/service:port)
+              # Example: "5432": "default/postgres:5432"
+        wait: true
+        timeout: 5m
+
+- name: Deploy MetalLB (App Cluster Only)
+  hosts: kube_control_plane[0]
+  become: true
+  gather_facts: false
+  tags: [metallb]
+  vars:
+    metallb_namespace: metallb-system
+    metallb_chart_version: "0.14.9"
+    harbor_url: "{{ lookup('env', 'HARBOR_URL') | default('harbor.internal', true) }}"
+    metallb_ip_pool_start: "{{ lookup('env', 'METALLB_IP_START') | default('10.2.0.200', true) }}"
+    metallb_ip_pool_end: "{{ lookup('env', 'METALLB_IP_END') | default('10.2.0.250', true) }}"
+
+  tasks:
+    - name: Verify this is the application cluster
+      ansible.builtin.assert:
+        that:
+          - cluster_name == "app-cluster"
+        fail_msg: "MetalLB should only be deployed on the application cluster"
+        quiet: true
+
+    - name: Create MetalLB namespace
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: "{{ metallb_namespace }}"
+
+    - name: Deploy MetalLB via Helm
+      kubernetes.core.helm:
+        name: metallb
+        chart_ref: metallb/metallb
+        chart_version: "{{ metallb_chart_version }}"
+        release_namespace: "{{ metallb_namespace }}"
+        values:
+          speaker:
+            image:
+              repository: "{{ harbor_url }}/metallb/speaker"
+          controller:
+            image:
+              repository: "{{ harbor_url }}/metallb/controller"
+          frr:
+            enabled: false  # Use L2 mode by default
+        wait: true
+        timeout: 5m
+
+    - name: Create IPAddressPool
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: metallb.io/v1beta1
+          kind: IPAddressPool
+          metadata:
+            name: default-pool
+            namespace: "{{ metallb_namespace }}"
+          spec:
+            addresses:
+              - "{{ metallb_ip_pool_start }}-{{ metallb_ip_pool_end }}"
+            autoAssign: true
+
+    - name: Create L2Advertisement
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: metallb.io/v1beta1
+          kind: L2Advertisement
+          metadata:
+            name: default-l2
+            namespace: "{{ metallb_namespace }}"
+          spec:
+            ipAddressPools:
+              - default-pool
+
+- name: Deploy Rancher (Management Cluster Only)
+  hosts: kube_control_plane[0]
+  become: true
+  gather_facts: false
+  tags: [rancher]
+  vars:
+    rancher_namespace: cattle-system
+    rancher_chart_version: "2.10.3"
+    rancher_hostname: "{{ lookup('env', 'RANCHER_HOSTNAME') | default('rancher.mgmt.internal', true) }}"
+    harbor_url: "{{ lookup('env', 'HARBOR_URL') | default('harbor.internal', true) }}"
+
+  tasks:
+    - name: Verify this is the management cluster
+      ansible.builtin.assert:
+        that:
+          - cluster_name == "mgmt-cluster"
+        fail_msg: "Rancher should only be deployed on the management cluster"
+        quiet: true
+
+    - name: Create Rancher namespace
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: "{{ rancher_namespace }}"
+
+    - name: Add Rancher Helm repo
+      kubernetes.core.helm_repository:
+        name: rancher
+        repo_url: "https://releases.rancher.com/server-charts/latest"
+
+    - name: Deploy Rancher via Helm
+      kubernetes.core.helm:
+        name: rancher
+        chart_ref: rancher/rancher
+        chart_version: "{{ rancher_chart_version }}"
+        release_namespace: "{{ rancher_namespace }}"
+        values:
+          hostname: "{{ rancher_hostname }}"
+          replicas: 3
+          certmanager:
+            enabled: true
+          rancherImage: "{{ harbor_url }}/rancher/rancher"
+          systemDefaultRegistry: "{{ harbor_url }}"
+          useBundledSystemChart: true
+          privateRegistry:
+            enabled: true
+            url: "{{ harbor_url }}"
+            insecure: false
+        wait: true
+        timeout: 10m
+
+    - name: Display Rancher access info
+      ansible.builtin.debug:
+        msg: |
+          Rancher deployed at: https://{{ rancher_hostname }}
+          Initial admin password: kubectl -n {{ rancher_namespace }} get secret bootstrap-secret -o jsonpath='{.data.bootstrapPassword}' | base64 -d
+
+- name: Deploy ArgoCD (Management Cluster Only)
+  hosts: kube_control_plane[0]
+  become: true
+  gather_facts: false
+  tags: [argocd]
+  vars:
+    argocd_namespace: argocd
+    argocd_chart_version: "7.7.16"
+    harbor_url: "{{ lookup('env', 'HARBOR_URL') | default('harbor.internal', true) }}"
+
+  tasks:
+    - name: Verify this is the management cluster
+      ansible.builtin.assert:
+        that:
+          - cluster_name == "mgmt-cluster"
+        fail_msg: "ArgoCD should only be deployed on the management cluster"
+        quiet: true
+
+    - name: Create ArgoCD namespace
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: "{{ argocd_namespace }}"
+
+    - name: Add ArgoCD Helm repo
+      kubernetes.core.helm_repository:
+        name: argo
+        repo_url: "https://argoproj.github.io/argo-helm"
+
+    - name: Deploy ArgoCD via Helm
+      kubernetes.core.helm:
+        name: argocd
+        chart_ref: argo/argo-cd
+        chart_version: "{{ argocd_chart_version }}"
+        release_namespace: "{{ argocd_namespace }}"
+        values:
+          global:
+            image:
+              repository: "{{ harbor_url }}/argoproj/argocd"
+          configs:
+            params:
+              server.insecure: false
+          server:
+            replicas: 2
+            ingress:
+              enabled: true
+              hostname: argocd.mgmt.internal
+              ingressClassName: nginx
+              tls: true
+            metrics:
+              enabled: true
+              serviceMonitor:
+                enabled: true
+          repoServer:
+            replicas: 2
+            metrics:
+              enabled: true
+              serviceMonitor:
+                enabled: true
+        wait: true
+        timeout: 10m
+
+    - name: Get initial ArgoCD admin password
+      ansible.builtin.command: >
+        kubectl -n {{ argocd_namespace }} get secret argocd-initial-admin-secret
+        -o jsonpath='{.data.password}' | base64 -d
+      register: argocd_password
+      changed_when: false
+
+    - name: Display ArgoCD access info
+      ansible.builtin.debug:
+        msg: |
+          ArgoCD deployed at: https://argocd.mgmt.internal
+          Username: admin
+          Password: {{ argocd_password.stdout }}
+          IMPORTANT: Change this password immediately!

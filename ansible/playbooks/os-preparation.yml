@@ -1,0 +1,333 @@
+---
+# OS Preparation Playbook
+# Handles: kernel params, swap, modules, containerd, users, SSH, NTP, DNS, auditd
+# Supports: Ubuntu 22.04 in air-gap (packages from Nexus)
+
+- name: OS Preparation - All Nodes
+  hosts: all
+  become: true
+  gather_facts: true
+  vars:
+    deploy_user: deploy
+    deploy_user_ssh_key: "{{ lookup('file', lookup('env', 'SSH_PUB_KEY') | default('~/.ssh/id_rsa.pub', true)) }}"
+    nexus_url: "{{ lookup('env', 'NEXUS_URL') | default('http://nexus.internal:8081', true) }}"
+    ntp_servers:
+      - 10.0.0.1
+      - 10.0.0.2
+    dns_servers:
+      - 10.0.0.1
+      - 10.0.0.2
+    search_domains:
+      - internal
+    containerd_version: "1.7.24"
+    runc_version: "1.2.3"
+
+  pre_tasks:
+    - name: Verify OS is Ubuntu 22.04
+      ansible.builtin.assert:
+        that:
+          - ansible_distribution == "Ubuntu"
+          - ansible_distribution_major_version == "22"
+        fail_msg: "This playbook only supports Ubuntu 22.04. Found: {{ ansible_distribution }} {{ ansible_distribution_version }}"
+
+    - name: Check Nexus connectivity
+      ansible.builtin.uri:
+        url: "{{ nexus_url }}/service/rest/v1/status"
+        method: GET
+        status_code: 200
+        timeout: 10
+      register: nexus_check
+      failed_when: false
+      when: nexus_url != ""
+
+  tasks:
+    # === Kernel Parameters ===
+    - name: Configure kernel parameters for Kubernetes
+      ansible.posix.sysctl:
+        name: "{{ item.name }}"
+        value: "{{ item.value }}"
+        sysctl_set: true
+        state: present
+        reload: true
+      loop:
+        - { name: 'net.ipv4.ip_forward', value: '1' }
+        - { name: 'net.bridge.bridge-nf-call-iptables', value: '1' }
+        - { name: 'net.bridge.bridge-nf-call-ip6tables', value: '1' }
+        - { name: 'net.ipv4.tcp_keepalive_time', value: '600' }
+        - { name: 'net.ipv4.tcp_keepalive_intvl', value: '30' }
+        - { name: 'net.ipv4.tcp_keepalive_probes', value: '10' }
+        - { name: 'net.core.somaxconn', value: '65535' }
+        - { name: 'net.ipv4.tcp_max_syn_backlog', value: '65535' }
+        - { name: 'vm.max_map_count', value: '262144' }
+        - { name: 'vm.swappiness', value: '0' }
+        - { name: 'fs.inotify.max_user_watches', value: '524288' }
+        - { name: 'fs.inotify.max_user_instances', value: '8192' }
+        - { name: 'fs.file-max', value: '2097152' }
+        - { name: 'kernel.pid_max', value: '4194303' }
+
+    - name: Ensure br_netfilter module is loaded
+      community.general.modprobe:
+        name: br_netfilter
+        state: present
+
+    - name: Persist kernel modules
+      ansible.builtin.copy:
+        dest: /etc/modules-load.d/k8s.conf
+        content: |
+          br_netfilter
+          overlay
+          ip_vs
+          ip_vs_rr
+          ip_vs_wrr
+          ip_vs_sh
+          nf_conntrack
+        mode: '0644'
+
+    # === Swap ===
+    - name: Disable swap
+      ansible.builtin.shell: |
+        swapoff -a
+        sed -i '/swap/d' /etc/fstab
+      changed_when: false
+
+    - name: Verify swap is off
+      ansible.builtin.command: swapon --show
+      register: swap_check
+      changed_when: false
+      failed_when: swap_check.stdout | length > 0
+
+    # === Package Management (Air-Gap Nexus) ===
+    - name: Configure Nexus apt repository
+      ansible.builtin.copy:
+        dest: /etc/apt/sources.list.d/nexus.list
+        content: |
+          deb {{ nexus_url }}/repository/apt-ubuntu-hosted/ jammy main restricted universe multiverse
+          deb {{ nexus_url }}/repository/apt-ubuntu-hosted/ jammy-updates main restricted universe multiverse
+          deb {{ nexus_url }}/repository/apt-ubuntu-hosted/ jammy-security main restricted universe multiverse
+        mode: '0644'
+      when: nexus_url != ""
+
+    - name: Remove default Ubuntu sources (air-gap)
+      ansible.builtin.file:
+        path: /etc/apt/sources.list
+        state: absent
+      when: nexus_url != ""
+
+    - name: Update apt cache
+      ansible.builtin.apt:
+        update_cache: yes
+        cache_valid_time: 3600
+
+    # === Essential Packages ===
+    - name: Install essential packages
+      ansible.builtin.apt:
+        name:
+          - apt-transport-https
+          - ca-certificates
+          - curl
+          - gnupg
+          - lsb-release
+          - socat
+          - conntrack
+          - ipset
+          - jq
+          - chrony
+          - auditd
+          - apparmor
+          - apparmor-utils
+          - ceph-common
+          - rsync
+          - net-tools
+          - tcpdump
+          - strace
+        state: present
+
+    # === Containerd ===
+    - name: Install containerd
+      ansible.builtin.apt:
+        name:
+          - containerd={{ containerd_version }}*
+          - runc={{ runc_version }}*
+        state: present
+
+    - name: Create containerd config directory
+      ansible.builtin.file:
+        path: /etc/containerd
+        state: directory
+        mode: '0755'
+
+    - name: Generate default containerd config
+      ansible.builtin.shell: containerd config default > /etc/containerd/config.toml
+      changed_when: false
+
+    - name: Configure containerd for systemd cgroup driver
+      ansible.builtin.lineinfile:
+        path: /etc/containerd/config.toml
+        regexp: 'SystemdCgroup'
+        line: '            SystemdCgroup = true'
+        state: present
+
+    - name: Configure containerd mirror for Harbor (air-gap)
+      ansible.builtin.blockinfile:
+        path: /etc/containerd/config.toml
+        marker: "# {mark} HARBOR MIRROR"
+        insertafter: '\\[plugins."io.containerd.grpc.v1.cri".registry\\]'
+        block: |
+          [plugins."io.containerd.grpc.v1.cri".registry.mirrors]
+            [plugins."io.containerd.grpc.v1.cri".registry.mirrors."harbor.internal"]
+            endpoint = ["https://harbor.internal"]
+          [plugins."io.containerd.grpc.v1.cri".registry.configs."harbor.internal".tls]
+            insecure_skip_verify = true
+      when: nexus_url != ""
+
+    - name: Start and enable containerd
+      ansible.builtin.systemd:
+        name: containerd
+        state: started
+        enabled: true
+
+    # === User Setup ===
+    - name: Create deploy user
+      ansible.builtin.user:
+        name: "{{ deploy_user }}"
+        shell: /bin/bash
+        groups: sudo,docker
+        append: true
+        create_home: true
+
+    - name: Deploy SSH key for deploy user
+      ansible.posix.authorized_key:
+        user: "{{ deploy_user }}"
+        key: "{{ deploy_user_ssh_key }}"
+        state: present
+
+    - name: Allow deploy user passwordless sudo
+      ansible.builtin.copy:
+        dest: /etc/sudoers.d/{{ deploy_user }}
+        content: "{{ deploy_user }} ALL=(ALL) NOPASSWD:ALL"
+        mode: '0440'
+        validate: /usr/sbin/visudo -csf %s
+
+    # === SSH Hardening ===
+    - name: Harden SSH configuration
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: "{{ item.regexp }}"
+        line: "{{ item.line }}"
+        state: present
+        validate: /usr/sbin/sshd -t -f %s
+      loop:
+        - { regexp: '^#?PermitRootLogin', line: 'PermitRootLogin no' }
+        - { regexp: '^#?PasswordAuthentication', line: 'PasswordAuthentication no' }
+        - { regexp: '^#?X11Forwarding', line: 'X11Forwarding no' }
+        - { regexp: '^#?MaxAuthTries', line: 'MaxAuthTries 3' }
+        - { regexp: '^#?ClientAliveInterval', line: 'ClientAliveInterval 300' }
+        - { regexp: '^#?ClientAliveCountMax', line: 'ClientAliveCountMax 2' }
+        - { regexp: '^#?PermitEmptyPasswords', line: 'PermitEmptyPasswords no' }
+        - { regexp: '^#?ChallengeResponseAuthentication', line: 'ChallengeResponseAuthentication no' }
+        - { regexp: '^#?UsePAM', line: 'UsePAM yes' }
+      notify: Restart SSH
+
+    # === NTP (Chrony) ===
+    - name: Configure chrony for air-gap
+      ansible.builtin.copy:
+        dest: /etc/chrony/chrony.conf
+        content: |
+          # Air-gap NTP configuration
+          {% for server in ntp_servers %}
+          server {{ server }} iburst
+          {% endfor %}
+          driftfile /var/lib/chrony/drift
+          makestep 1.0 3
+          rtcsync
+          logdir /var/log/chrony
+          maxupdateskew 100.0
+          bindcmdaddress 127.0.0.1
+          local stratum 10
+          allow {{ ansible_default_ipv4.network }}/24
+        mode: '0644'
+      notify: Restart chrony
+
+    # === DNS ===
+    - name: Configure DNS resolution
+      ansible.builtin.copy:
+        dest: /etc/resolv.conf
+        content: |
+          {% for server in dns_servers %}
+          nameserver {{ server }}
+          {% endfor %}
+          {% for domain in search_domains %}
+          search {{ domain }}
+          {% endfor %}
+        mode: '0644'
+
+    # === Security Limits ===
+    - name: Configure security limits
+      ansible.builtin.copy:
+        dest: /etc/security/limits.d/99-k8s.conf
+        content: |
+          * soft nofile 655360
+          * hard nofile 655360
+          * soft nproc 655360
+          * hard nproc 655360
+          * soft memlock unlimited
+          * hard memlock unlimited
+          root soft nofile 655360
+          root hard nofile 655360
+        mode: '0644'
+
+    # === Auditd ===
+    - name: Configure auditd rules for Kubernetes
+      ansible.builtin.copy:
+        dest: /etc/audit/rules.d/k8s-audit.rules
+        content: |
+          # Kubernetes audit rules
+          -w /etc/kubernetes/ -p wa -k k8s-config
+          -w /var/lib/etcd/ -p wa -k etcd-data
+          -w /etc/ssh/sshd_config -p wa -k ssh-config
+          -w /etc/passwd -p wa -k identity
+          -w /etc/sudoers -p wa -k sudoers
+          -w /etc/sudoers.d/ -p wa -k sudoers
+          -w /var/log/ -p wa -k logs
+          -a always,exit -F arch=b64 -S mount -S umount -S umount2 -k mount
+          -a always,exit -F arch=b64 -S setuid -S setgid -S setreuid -S setregid -S setresuid -S setresgid -k id-change
+        mode: '0600'
+      notify: Restart auditd
+
+    # === Disable unnecessary services ===
+    - name: Disable unnecessary services
+      ansible.builtin.systemd:
+        name: "{{ item }}"
+        state: stopped
+        enabled: false
+      loop:
+        - ufw
+        - snapd
+        - ModemManager
+        - avahi-daemon
+      failed_when: false
+
+    # === Remove unnecessary packages ===
+    - name: Remove snap and cloud-init
+      ansible.builtin.apt:
+        name:
+          - snapd
+          - cloud-init
+        state: absent
+        purge: true
+      failed_when: false
+
+  handlers:
+    - name: Restart SSH
+      ansible.builtin.systemd:
+        name: sshd
+        state: restarted
+
+    - name: Restart chrony
+      ansible.builtin.systemd:
+        name: chrony
+        state: restarted
+
+    - name: Restart auditd
+      ansible.builtin.shell: service auditd restart
+      changed_when: false

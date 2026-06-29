@@ -1,0 +1,151 @@
+# Management Cluster - K8s Cluster Group Variables
+# Reference: https://kubespray.io/
+
+# === Kubernetes Version ===
+kube_version: "{{ lookup('env', 'K8S_VERSION') | default('v1.31.4', true) }}"
+
+# === Cluster Name ===
+cluster_name: mgmt-cluster
+
+# === Container Runtime ===
+container_manager: containerd
+
+# === CNI Plugin ===
+kube_network_plugin: calico
+
+# === Calico Configuration ===
+calico_iptables_backend: "Auto"
+calico_ipip_mode: "Always"        # Use "Never" for VXLAN-only
+calico_vxlan_mode: "Never"        # Set to "Always" for VXLAN mode
+calico_ip_autodetection_method: "interface=eth0"  # Adjust per your NIC name
+calico_node_liveness_check_enabled: true
+
+# === Pod and Service CIDR ===
+kube_pods_subnet: 10.244.0.0/16
+kube_service_addresses: 10.96.0.0/12
+kube_network_node_prefix: 24
+
+# === Load Balancer (External HAProxy) ===
+loadbalancer_apiserver:
+  address: 10.1.0.100   # VIP managed by keepalived
+  port: 6443
+
+# === etcd Configuration ===
+etcd_deployment_type: host
+etcd_data_dir: /var/lib/etcd    # Must be on dedicated disk/LV
+# etcd_disk_scheduler: "noop"    # For dedicated disk
+
+# === API Server ===
+kube_apiserver_node_port_range: "30000-32767"
+kube_apiserver_enable_admission_plugins:
+  - NodeRestriction
+  - PodSecurity
+  - ResourceQuota
+  - ServiceAccount
+  - DefaultStorageClass
+  - DefaultTolerationSeconds
+  - MutatingAdmissionWebhook
+  - ValidatingAdmissionWebhook
+  - Priority
+  - NamespaceLifecycle
+  - LimitRanger
+
+# === Audit Logging ===
+kubernetes_audit: true
+audit_log_path: "/var/log/kubernetes/audit.log"
+audit_log_maxage: 30
+audit_log_maxbackups: 10
+audit_log_maxsize: 200  # MB
+
+# === Encryption at Rest ===
+kube_encrypt_secret_data: true
+
+# === Air-Gap Configuration ===
+# Point to Harbor/Nexus registry
+registry_host: "harbor.internal"
+registry_port: "443"
+registry_protocol: "https"
+
+# Override image repositories for air-gap
+kube_image_repo: "{{ registry_host }}/k8s"
+etcd_image_repo: "{{ registry_host }}/k8s/etcd"
+calico_image_repo: "{{ registry_host }}/calico"
+coredns_image_repo: "{{ registry_host }}/k8s/coredns"
+dnsautoscaler_image_repo: "{{ registry_host }}/k8s/cluster-proportional-autoscaler"
+metrics_server_image_repo: "{{ registry_host }}/k8s/metrics-server"
+nginx_image_repo: "{{ registry_host }}/k8s/nginx"
+
+# Containerd mirror configuration for air-gap
+containerd_registries:
+  "harbor.internal":
+    endpoints:
+      - "https://harbor.internal"
+
+containerd_insecure_registries:
+  - "harbor.internal"
+
+# Skip download phase (we manage our own images)
+download_run_once: false
+download_localhost: false
+
+# === Security ===
+kube_security_context: true
+
+# === Node Labels ===
+node_labels:
+  mgmt-worker-01:
+    node-role.kubernetes.io/worker: "true"
+  mgmt-worker-02:
+    node-role.kubernetes.io/worker: "true"
+  mgmt-worker-03:
+    node-role.kubernetes.io/worker: "true"
+  mgmt-worker-04:
+    node-role.kubernetes.io/worker: "true"
+  mgmt-worker-05:
+    node-role.kubernetes.io/worker: "true"
+
+# === Certificates ===
+kube_cert_group: kube-cert-api
+auto_renew_certificates: true
+
+# === Feature Gates ===
+kube_feature_gates: []
+
+# === Proxy (disabled for air-gap) ===
+http_proxy: ""
+https_proxy: ""
+no_proxy: ""
+
+# === Additional Packages ===
+additional_sysctl:
+  - { name: 'net.core.somaxconn', value: '65535' }
+  - { name: 'net.ipv4.tcp_max_syn_backlog', value: '65535' }
+  - { name: 'vm.max_map_count', value: '262144' }
+
+# === Kubelet Configuration ===
+kubelet_config_extra_args:
+  maxPods: 110
+  eventRecordQPS: 50
+  eventBurst: 100
+  kubeAPIQPS: 50
+  kubeAPIBurst: 100
+  serializeImagePulls: false
+
+# === Kube-proxy ===
+kube_proxy_mode: iptables
+
+# === DNS ===
+enable_nodelocaldns: true
+nodelocaldns_ip: 169.254.25.10
+
+# === Metrics Server ===
+metrics_server_enabled: true
+
+# === Resolv.conf ===
+upstream_dns_servers:
+  - 10.1.0.1   # Internal DNS server
+  - 10.1.0.2   # Internal DNS server (secondary)
+
+searchdomains:
+  - mgmt.internal
+  - internal
