@@ -140,6 +140,15 @@ sudo netplan apply
 
 ---
 
+## 🌐 Web Resources
+
+| Resource | Description | URL |
+|----------|-------------|-----|
+| **Wiki** | Technology learning & training | [GitHub Pages](https://davoudteimouri.github.io/cloud-native-deployment/wiki/) |
+| **Deployment Wizard** | Interactive step-by-step guide | [GitHub Pages](https://davoudteimouri.github.io/cloud-native-deployment/wiki/wizard.html) |
+
+---
+
 ## 📋 Documentation Index
 
 ### 🏗️ Architecture & Design
