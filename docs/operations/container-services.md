@@ -1,17 +1,18 @@
 # Container Services Guide
 
-> Running repositories, registries, and other services as containers with custom ports and advanced path handling
+> Running repositories, registries, and other services as containers — transparent proxy means zero client config
 
 ---
 
 ## 1. Architecture Overview
 
-All services run as Docker containers on a dedicated server (or shared management server). Each service uses:
+All services run as Docker containers on a dedicated server (or shared management server).
+Each service uses host directory mounts for persistent data. **Clients never
+connect directly to these services** — all traffic goes through the reverse
+proxy using canonical public URLs (e.g., `archive.ubuntu.com`, `docker.io`).
 
-- **Custom host ports** — avoid conflicts with existing services
-- **Host directory mounts** — persistent data, config, logs on host
-- **Reverse proxy** — single entry point for all services
-- **DNS** — service names point to proxy IP
+See [Reverse Proxy Architecture](docs/architecture/reverse-proxy-architecture.md)
+for how the transparent proxy works.
 
 ```
 Host Server (10.0.0.10)
