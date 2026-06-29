@@ -1,0 +1,576 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cloud-Native Deployment Wiki</title>
+    <style>
+        :root {
+            --bg-primary: #0d1117;
+            --bg-secondary: #161b22;
+            --bg-tertiary: #21262d;
+            --text-primary: #c9d1d9;
+            --text-secondary: #8b949e;
+            --text-accent: #58a6ff;
+            --border-color: #30363d;
+            --success: #3fb950;
+            --warning: #d29922;
+            --danger: #f85149;
+            --info: #58a6ff;
+            --code-bg: #0d1117;
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            line-height: 1.6;
+        }
+        .container { max-width: 1200px; margin: 0 auto; padding: 20px; }
+        header {
+            background: var(--bg-secondary);
+            border-bottom: 1px solid var(--border-color);
+            padding: 20px 0;
+            margin-bottom: 30px;
+        }
+        header h1 { color: var(--text-accent); font-size: 2em; }
+        header p { color: var(--text-secondary); margin-top: 5px; }
+        nav {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            padding: 15px;
+            margin-bottom: 30px;
+        }
+        nav h3 { color: var(--text-accent); margin-bottom: 10px; }
+        nav ul { list-style: none; display: flex; flex-wrap: wrap; gap: 10px; }
+        nav a {
+            color: var(--text-primary);
+            text-decoration: none;
+            padding: 5px 12px;
+            background: var(--bg-tertiary);
+            border-radius: 4px;
+            border: 1px solid var(--border-color);
+            font-size: 0.9em;
+        }
+        nav a:hover { background: var(--border-color); color: var(--text-accent); }
+        .wiki-section {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            padding: 25px;
+            margin-bottom: 25px;
+        }
+        .wiki-section h2 {
+            color: var(--text-accent);
+            border-bottom: 1px solid var(--border-color);
+            padding-bottom: 10px;
+            margin-bottom: 15px;
+        }
+        .wiki-section h3 { color: var(--text-primary); margin: 15px 0 10px; }
+        .wiki-section p { margin-bottom: 10px; }
+        .wiki-section ul, .wiki-section ol { margin: 10px 0 10px 25px; }
+        .wiki-section li { margin-bottom: 5px; }
+        code {
+            background: var(--code-bg);
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-family: 'SFMono-Regular', Consolas, monospace;
+            font-size: 0.9em;
+            border: 1px solid var(--border-color);
+        }
+        pre {
+            background: var(--code-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            padding: 15px;
+            overflow-x: auto;
+            margin: 10px 0;
+        }
+        pre code { background: none; border: none; padding: 0; }
+        .diagram {
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            padding: 20px;
+            font-family: 'SFMono-Regular', Consolas, monospace;
+            font-size: 0.85em;
+            overflow-x: auto;
+            white-space: pre;
+            margin: 15px 0;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 15px 0;
+        }
+        th, td {
+            padding: 10px 12px;
+            border: 1px solid var(--border-color);
+            text-align: left;
+        }
+        th { background: var(--bg-tertiary); color: var(--text-accent); }
+        tr:nth-child(even) { background: var(--bg-primary); }
+        .badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-size: 0.8em;
+            font-weight: 600;
+        }
+        .badge-high { background: rgba(248,81,73,0.2); color: var(--danger); }
+        .badge-medium { background: rgba(210,153,34,0.2); color: var(--warning); }
+        .badge-low { background: rgba(63,185,80,0.2); color: var(--success); }
+        .tip {
+            background: rgba(88,166,255,0.1);
+            border-left: 4px solid var(--info);
+            padding: 12px 15px;
+            margin: 15px 0;
+            border-radius: 0 4px 4px 0;
+        }
+        .warning-box {
+            background: rgba(210,153,34,0.1);
+            border-left: 4px solid var(--warning);
+            padding: 12px 15px;
+            margin: 15px 0;
+            border-radius: 0 4px 4px 0;
+        }
+        footer {
+            text-align: center;
+            padding: 30px;
+            color: var(--text-secondary);
+            border-top: 1px solid var(--border-color);
+            margin-top: 40px;
+        }
+        @media (max-width: 768px) {
+            .container { padding: 10px; }
+            nav ul { flex-direction: column; }
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <div class="container">
+            <h1>Cloud-Native Deployment Wiki</h1>
+            <p>Learn the technologies behind enterprise cloud-native infrastructure</p>
+        </div>
+    </header>
+
+    <div class="container">
+        <nav>
+            <h3>Quick Navigation</h3>
+            <ul>
+                <li><a href="#architecture">Architecture</a></li>
+                <li><a href="#kubernetes">Kubernetes</a></li>
+                <li><a href="#ceph">Ceph</a></li>
+                <li><a href="#networking">Networking</a></li>
+                <li><a href="#monitoring">Monitoring</a></li>
+                <li><a href="#storage">Storage</a></li>
+                <li><a href="#security">Security</a></li>
+                <li><a href="#automation">Automation</a></li>
+                <li><a href="#reverse-proxy">Reverse Proxy</a></li>
+                <li><a href="#addons">Addons</a></li>
+            </ul>
+        </nav>
+
+        <!-- Architecture Overview -->
+        <section class="wiki-section" id="architecture">
+            <h2>Architecture Overview</h2>
+            <p>This deployment uses a <strong>transparent reverse proxy</strong> architecture. All clients use canonical public URLs (like <code>archive.ubuntu.com</code>, <code>docker.io</code>) and the reverse proxy handles routing internally.</p>
+
+            <div class="diagram">
+┌─────────────────────────────────────────────────────────────────┐
+│                        NETWORK OVERVIEW                          │
+│                                                                   │
+│  Clients (servers, workstations, K8s nodes)                      │
+│      │                                                            │
+│      │  Use canonical URLs:                                       │
+│      │  • archive.ubuntu.com                                      │
+│      │  • registry-1.docker.io                                    │
+│      │  • quay.io                                                 │
+│      │  • registry.k8s.io                                        │
+│      ▼                                                            │
+│  ┌─────────────────────────────────────────────────────────┐     │
+│  │  DNS Server (CoreDNS / BIND)                             │     │
+│  │  Resolves public domains → 10.0.0.10 (proxy IP)          │     │
+│  └─────────────────────────────────────────────────────────┘     │
+│      │                                                            │
+│      ▼                                                            │
+│  ┌─────────────────────────────────────────────────────────┐     │
+│  │  Reverse Proxy (NGINX) — 10.0.0.10                        │     │
+│  │                                                           │     │
+│  │  1. Check local cache (nginx cache)                       │     │
+│  │  2. Check Nexus/Harbor (pre-staged data)                  │     │
+│  │  3. If internet: fetch from real source                   │     │
+│  │  4. If air-gap: return 404 (must pre-stage)               │     │
+│  └─────────────────────────────────────────────────────────┘     │
+│      │              │              │              │                │
+│      ▼              ▼              ▼              ▼                │
+│  ┌────────┐   ┌────────┐   ┌────────┐   ┌────────────┐          │
+│  │ Nexus  │   │ Harbor │   │ GitLab │   │ PostgreSQL │          │
+│  │ 10.0.0 │   │ 10.0.0 │   │ 10.0.0 │   │ 10.0.0.203 │          │
+│  │  .201   │   │  .200   │   │  .202   │   │            │          │
+│  └────────┘   └────────┘   └────────┘   └────────────┘          │
+│                                                                   │
+│  ┌─────────────────────────────────────────────────────────┐     │
+│  │  Kubernetes Cluster                                      │     │
+│  │  Masters: 10.0.0.11-13  Workers: 10.0.0.21-23            │     │
+│  └─────────────────────────────────────────────────────────┘     │
+│                                                                   │
+│  ┌─────────────────────────────────────────────────────────┐     │
+│  │  Ceph Cluster                                            │     │
+│  │  MON: 3  OSD: N  MDS: 2  RGW: 2                         │     │
+│  └─────────────────────────────────────────────────────────┘     │
+└─────────────────────────────────────────────────────────────────┘
+            </div>
+        </section>
+
+        <!-- Kubernetes -->
+        <section class="wiki-section" id="kubernetes">
+            <h2>Kubernetes</h2>
+            <h3>What is it?</h3>
+            <p>Kubernetes (K8s) is a container orchestration platform that automates deployment, scaling, and management of containerized applications. Originally developed by Google, now maintained by CNCF.</p>
+
+            <h3>Core Concepts</h3>
+            <table>
+                <tr><th>Concept</th><th>Description</th></tr>
+                <tr><td>Pod</td><td>Smallest deployable unit — one or more containers sharing network/storage</td></tr>
+                <tr><td>Deployment</td><td>Declarative updates for pods with rollout/rollback</td></tr>
+                <tr><td>StatefulSet</td><td>Like Deployment but for stateful apps (stable network IDs)</td></tr>
+                <tr><td>DaemonSet</td><td>One pod per node (logging, monitoring agents)</td></tr>
+                <tr><td>Service</td><td>Stable network endpoint for a set of pods</td></tr>
+                <tr><td>Ingress</td><td>HTTP/HTTPS routing to services</td></tr>
+                <tr><td>Namespace</td><td>Virtual cluster for resource isolation</td></tr>
+                <tr><td>PersistentVolume</td><td>Cluster-wide storage resource</td></tr>
+                <tr><td>StorageClass</td><td>Defines storage types (SSD, HDD, etc.)</td></tr>
+            </table>
+
+            <h3>Architecture</h3>
+            <div class="diagram">
+┌─────────────────────────────────────────────────────┐
+│ Control Plane                                        │
+│ ┌──────────────────┐  ┌──────────────────┐          │
+│ │ API Server       │  │ etcd             │          │
+│ │ kubectl, dashboard│  │ Cluster state    │          │
+│ └──────────────────┘  └──────────────────┘          │
+│ ┌──────────────────┐  ┌──────────────────┐          │
+│ │ Scheduler        │  │ Controller Mgr   │          │
+│ │ Assigns pods     │  │ Reconciles state │          │
+│ └──────────────────┘  └──────────────────┘          │
+└─────────────────────────────────────────────────────┘
+                        │
+┌─────────────────────────────────────────────────────┐
+│ Worker Node                                          │
+│ ┌──────────────────┐  ┌──────────────────┐          │
+│ │ kubelet          │  │ kube-proxy       │          │
+│ │ Talks to API     │  │ Network rules    │          │
+│ └──────────────────┘  └──────────────────┘          │
+│ ┌──────────────────┐                                 │
+│ │ Container Runtime│  (containerd, CRI-O)            │
+│ └──────────────────┘                                 │
+│ ┌─────┐ ┌─────┐ ┌─────┐                              │
+│ │Pod 1│ │Pod 2│ │Pod 3│                              │
+│ └─────┘ └─────┘ └─────┘                              │
+└─────────────────────────────────────────────────────┘
+            </div>
+
+            <h3>Why KubeSpray?</h3>
+            <ul>
+                <li>Bare-metal/VM focused — works on any infrastructure</li>
+                <li>Highly configurable — every component customizable</li>
+                <li>Supports any CNI (Calico, Cilium, Flannel)</li>
+                <li>Air-gap friendly — can deploy without internet</li>
+                <li>CNCF certified — passes conformance tests</li>
+            </ul>
+
+            <div class="tip">
+                <strong>Tip:</strong> For small clusters (&lt;5 nodes), consider <a href="#k3s">K3s</a> — a lightweight, single-binary Kubernetes distribution.
+            </div>
+        </section>
+
+        <!-- Ceph -->
+        <section class="wiki-section" id="ceph">
+            <h2>Ceph</h2>
+            <h3>What is it?</h3>
+            <p>Ceph is a distributed storage platform providing object, block, and file storage from a single cluster. Designed for scalability, reliability, and no single point of failure.</p>
+
+            <h3>Core Concepts</h3>
+            <table>
+                <tr><th>Concept</th><th>Description</th></tr>
+                <tr><td>OSD</td><td>Object Storage Daemon — stores data, handles replication</td></tr>
+                <tr><td>MON</td><td>Monitor — maintains cluster map and health</td></tr>
+                <tr><td>MDS</td><td>Metadata Server — for CephFS filesystem</td></tr>
+                <tr><td>PG</td><td>Placement Group — how data is distributed across OSDs</td></tr>
+                <tr><td>RBD</td><td>RADOS Block Device — block storage for VMs/containers</td></tr>
+                <tr><td>CephFS</td><td>POSIX-compliant filesystem</td></tr>
+                <tr><td>RGW</td><td>RADOS Gateway — S3-compatible object storage</td></tr>
+                <tr><td>CRUSH</td><td>Algorithm that determines data placement</td></tr>
+            </table>
+
+            <h3>Why Ceph?</h3>
+            <ul>
+                <li><strong>Unified storage:</strong> Block (RBD), file (CephFS), object (RGW) in one cluster</li>
+                <li><strong>Self-healing:</strong> Automatic data rebalancing when OSD fails</li>
+                <li><strong>Scalability:</strong> Petabytes+ with no single point of failure</li>
+                <li><strong>Kubernetes integration:</strong> CSI driver for persistent volumes</li>
+            </ul>
+
+            <div class="tip">
+                <strong>Tip:</strong> For object-only storage, <a href="#minio">MinIO</a> is a lighter alternative. For K8s-only block storage, consider <a href="#longhorn">Longhorn</a>.
+            </div>
+        </section>
+
+        <!-- Networking -->
+        <section class="wiki-section" id="networking">
+            <h2>Networking</h2>
+
+            <h3>Calico (CNI)</h3>
+            <p>Calico is a container networking plugin providing networking and network policy enforcement. It routes pod traffic between nodes using BGP.</p>
+
+            <h3>MetalLB (Load Balancer)</h3>
+            <p>MetalLB provides LoadBalancer type services for bare-metal Kubernetes clusters. It assigns IPs from a configured pool and announces them via ARP (L2) or BGP.</p>
+
+            <h3>NGINX Ingress</h3>
+            <p>NGINX Ingress Controller manages external access to services, providing HTTP/HTTPS routing, TLS termination, and rate limiting.</p>
+
+            <h3>CoreDNS</h3>
+            <p>CoreDNS is the default DNS server in Kubernetes. It provides service discovery and name resolution within the cluster.</p>
+
+            <h3>Comparison</h3>
+            <table>
+                <tr><th>Feature</th><th>Calico</th><th>Cilium</th><th>Flannel</th></tr>
+                <tr><td>Network policies</td><td>Full</td><td>Full</td><td>None</td></tr>
+                <tr><td>BGP support</td><td>Yes</td><td>Yes</td><td>No</td></tr>
+                <tr><td>Performance</td><td>High</td><td>Highest (eBPF)</td><td>Medium</td></tr>
+                <tr><td>Encryption</td><td>WireGuard</td><td>WireGuard/IPsec</td><td>None</td></tr>
+                <tr><td>Observability</td><td>Basic</td><td>Hubble (excellent)</td><td>None</td></tr>
+            </table>
+        </section>
+
+        <!-- Monitoring -->
+        <section class="wiki-section" id="monitoring">
+            <h2>Monitoring</h2>
+
+            <h3>Prometheus</h3>
+            <p>Prometheus collects metrics from instrumented targets, stores time-series data, and provides PromQL for querying. It pulls metrics (doesn't need agents to push).</p>
+
+            <h3>Grafana</h3>
+            <p>Grafana connects to Prometheus (and other datasources) to create visual dashboards for monitoring.</p>
+
+            <h3>Loki</h3>
+            <p>Loki is a horizontally scalable log aggregation system. It indexes labels (like Prometheus) not full text, making it cheap to operate.</p>
+
+            <h3>Why Prometheus + Grafana + Loki?</h3>
+            <ul>
+                <li><strong>Pull-based:</strong> Prometheus scrapes metrics — no need to push</li>
+                <li><strong>Dimensional data:</strong> Metrics with labels (namespace, pod, node)</li>
+                <li><strong>Service discovery:</strong> Auto-discovers K8s pods and services</li>
+                <li><strong>Air-gap friendly:</strong> All self-hosted, no SaaS dependency</li>
+            </ul>
+        </section>
+
+        <!-- Storage -->
+        <section class="wiki-section" id="storage">
+            <h2>Storage</h2>
+
+            <h3>Storage Types</h3>
+            <table>
+                <tr><th>Type</th><th>Description</th><th>Example</th></tr>
+                <tr><td>Block</td><td>Raw disk volumes</td><td>Ceph RBD, AWS EBS</td></tr>
+                <tr><td>Object</td><td>Key-value storage (S3)</td><td>Ceph RGW, MinIO</td></tr>
+                <tr><td>File</td><td>POSIX filesystem</td><td>CephFS, NFS</td></tr>
+            </table>
+
+            <h3>MinIO</h3>
+            <p>MinIO is a high-performance S3-compatible object storage. Lightweight, simple, great for backups and artifact storage.</p>
+
+            <h3>Longhorn</h3>
+            <p>Longhorn is lightweight distributed block storage for Kubernetes. Provides built-in backup, snapshot, and replication.</p>
+
+            <h3>Comparison</h3>
+            <table>
+                <tr><th>Feature</th><th>Ceph</th><th>MinIO</th><th>Longhorn</th><th>NFS</th></tr>
+                <tr><td>Block storage</td><td>Yes</td><td>No</td><td>Yes</td><td>No</td></tr>
+                <tr><td>Object storage</td><td>Yes (RGW)</td><td>Yes</td><td>No</td><td>No</td></tr>
+                <tr><td>Filesystem</td><td>Yes (CephFS)</td><td>No</td><td>No</td><td>Yes</td></tr>
+                <tr><td>Replication</td><td>Yes</td><td>Erasure coding</td><td>Yes</td><td>No</td></tr>
+                <tr><td>Self-healing</td><td>Yes</td><td>Yes</td><td>Yes</td><td>No</td></tr>
+                <tr><td>Complexity</td><td>High</td><td>Low</td><td>Medium</td><td>Low</td></tr>
+            </table>
+        </section>
+
+        <!-- Security -->
+        <section class="wiki-section" id="security">
+            <h2>Security</h2>
+
+            <h3>Pod Security Standards</h3>
+            <p>Kubernetes Pod Security Standards (PSS) enforce security policies at the namespace level. Three levels:</p>
+            <ul>
+                <li><span class="badge badge-high">Privileged</span> — Unrestricted (for system components)</li>
+                <li><span class="badge badge-medium">Baseline</span> — Minimally restrictive (prevents known privilege escalations)</li>
+                <li><span class="badge badge-low">Restricted</span> — Heavily restricted (security best practices)</li>
+            </ul>
+
+            <h3>Network Policies</h3>
+            <p>NetworkPolicies control traffic flow between pods. By default, all pods can communicate. Apply deny-all policies and allow specific traffic.</p>
+
+            <h3>Kyverno / Gatekeeper</h3>
+            <p>Policy engines enforce rules about what can run in your cluster:</p>
+            <table>
+                <tr><th>Feature</th><th>Kyverno</th><th>Gatekeeper</th></tr>
+                <tr><td>Language</td><td>YAML</td><td>Rego (OPA)</td></tr>
+                <tr><td>Mutating</td><td>Built-in</td><td>Extension</td></tr>
+                <tr><td>Generating</td><td>Built-in</td><td>No</td></tr>
+                <tr><td>Learning curve</td><td>Low</td><td>High</td></tr>
+            </table>
+
+            <h3>cert-manager</h3>
+            <p>Automates TLS certificate management from various sources (Let's Encrypt, Vault, self-signed). Essential for enabling HTTPS everywhere.</p>
+
+            <h3>Vault</h3>
+            <p>HashiCorp Vault provides secrets management, encryption as a service, and dynamic secrets generation. Replaces native K8s Secrets for production.</p>
+        </section>
+
+        <!-- Automation -->
+        <section class="wiki-section" id="automation">
+            <h2>Automation</h2>
+
+            <h3>Ansible</h3>
+            <p>Ansible is an agentless automation tool using YAML playbooks. Connects via SSH — no software to install on targets. Used for OS preparation and KubeSpray deployment.</p>
+
+            <h3>ArgoCD (GitOps)</h3>
+            <p>ArgoCD is a GitOps continuous delivery tool. It watches a Git repository and automatically syncs the desired state to the cluster.</p>
+
+            <div class="diagram">
+Git Repository (desired state)
+        │
+        │ (watches via webhook or polling)
+        ▼
+┌──────────────────┐
+│ ArgoCD            │
+│ ┌──────────────┐  │
+│ │ Application  │  │ ← Defines source + destination
+│ └──────────────┘  │
+│ ┌──────────────┐  │
+│ │ Repo Server  │  │ ← Renders Helm/Kustomize
+│ └──────────────┘  │
+│ ┌──────────────┐  │
+│ │ App Controller│  │ ← Syncs desired → actual
+│ └──────────────┘  │
+└──────────────────┘
+        │
+        ▼
+Kubernetes Cluster (actual state)
+            </div>
+
+            <h3>AWX (Ansible Web UI)</h3>
+            <p>AWX is the open-source version of Ansible Tower. Provides a web UI, job scheduling, RBAC, and REST API for Ansible playbooks.</p>
+
+            <h3>Velero (Backup)</h3>
+            <p>Velero provides backup and disaster recovery for Kubernetes. Backs up cluster resources and persistent volumes, can restore to same or different cluster.</p>
+        </section>
+
+        <!-- Reverse Proxy -->
+        <section class="wiki-section" id="reverse-proxy">
+            <h2>Reverse Proxy Architecture</h2>
+
+            <h3>How It Works</h3>
+            <p>The reverse proxy sits between clients and backend services. It intercepts requests to public domains and routes them to the appropriate internal service.</p>
+
+            <h3>DNS Configuration</h3>
+            <p>All public repository domains resolve to the proxy IP:</p>
+            <pre><code>archive.ubuntu.com    → 10.0.0.10 (proxy)
+registry-1.docker.io  → 10.0.0.10 (proxy)
+quay.io               → 10.0.0.10 (proxy)
+registry.k8s.io      → 10.0.0.10 (proxy)</code></pre>
+
+            <h3>SSL Options</h3>
+            <table>
+                <tr><th>Option</th><th>How</th><th>Client Changes</th></tr>
+                <tr><td>Custom CA</td><td>Generate your own CA, install on all clients</td><td>Install CA cert once</td></tr>
+                <tr><td>Real certificates</td><td>Get certs for your own domain</td><td>None</td></tr>
+                <tr><td>Split-horizon DNS</td><td>Internal DNS → proxy, external DNS → real</td><td>None</td></tr>
+            </table>>
+
+            <div class="warning-box">
+                <strong>Important:</strong> For Docker registry proxying, you need to install your internal CA certificate on ALL client machines. This is a one-time operation.
+            </div>
+
+            <h3>Air-Gap Consideration</h3>
+            <p>In air-gap mode, the proxy cannot reach the internet. All data must be pre-staged into Nexus (packages) and Harbor (container images) before disconnecting.</p>
+        </section>
+
+        <!-- Addons -->
+        <section class="wiki-section" id="addons">
+            <h2>Kubernetes Addons</h2>
+
+            <h3>Essential Addons</h3>
+            <table>
+                <tr><th>Component</th><th>Purpose</th><th>Priority</th></tr>
+                <tr><td>metrics-server</td><td>Resource metrics for HPA</td><td><span class="badge badge-high">High</span></td></tr>
+                <tr><td>Kyverno</td><td>Policy enforcement</td><td><span class="badge badge-high">High</span></td></tr>
+                <tr><td>Falco</td><td>Runtime security detection</td><td><span class="badge badge-high">High</span></td></tr>
+                <tr><td>Trivy Operator</td><td>Image vulnerability scanning</td><td><span class="badge badge-high">High</span></td></tr>
+                <tr><td>OpenCost</td><td>Cost visibility</td><td><span class="badge badge-medium">Medium</span></td></tr>
+                <tr><td>Goldilocks</td><td>VPA recommendations</td><td><span class="badge badge-medium">Medium</span></td></tr>
+                <tr><td>Descheduler</td><td>Rebalance pods</td><td><span class="badge badge-medium">Medium</span></td></tr>
+            </table>
+
+            <h3>Optional Addons</h3>
+            <table>
+                <tr><th>Component</th><th>Purpose</th><th>When to Use</th></tr>
+                <tr><td>Linkerd</td><td>Service mesh (mTLS)</td><td>Need encryption between services</td></tr>
+                <tr><td>Istio</td><td>Full service mesh</td><td>Advanced traffic management</td></tr>
+                <tr><td>Vault</td><td>Secrets management</td><td>Need dynamic secrets</td></tr>
+                <tr><td>Karmada</td><td>Multi-cluster orchestration</td><td>Managing 3+ clusters</td></tr>
+                <tr><td>Dashboard</td><td>Web UI for K8s</td><td>Quick visual management</td></tr>
+            </table>
+
+            <h3>Service Mesh Comparison</h3>
+            <table>
+                <tr><th>Feature</th><th>Linkerd</th><th>Istio</th><th>Cilium</th></tr>
+                <tr><td>Sidecar</td><td>20MB Rust</td><td>100MB Envoy</td><td>None (eBPF)</td></tr>
+                <tr><td>Latency overhead</td><td>~1ms</td><td>~3ms</td><td>~0.1ms</td></tr>
+                <tr><td>mTLS</td><td>Auto</td><td>Auto</td><td>WireGuard</td></tr>
+                <tr><td>Canary</td><td>Basic</td><td>Full</td><td>No</td></tr>
+                <tr><td>Complexity</td><td>Low</td><td>High</td><td>Low</td></tr>
+            </table>
+        </section>
+
+        <!-- Alternatives -->
+        <section class="wiki-section" id="alternatives">
+            <h2>Alternatives</h2>
+
+            <h3>Container Orchestration</h3>
+            <table>
+                <tr><th>Tool</th><th>Best For</th><th>Pros</th><th>Cons</th></tr>
+                <tr><td>K3s</td><td>Edge, IoT, small clusters</td><td>50MB binary, easy install</td><td>Limited scalability</td></tr>
+                <tr><td>K0s</td><td>Any size cluster</td><td>Single binary, vendor-neutral</td><td>Smaller community</td></tr>
+                <tr><td>Nomad</td><td>Mixed workloads (containers + VMs)</td><td>Simple, supports VMs</td><td>Smaller ecosystem</td></tr>
+                <tr><td>Docker Swarm</td><td>Simple container deployments</td><td>Built into Docker</td><td>Limited features</td></tr>
+            </table>
+
+            <h3>Container Runtime</h3>
+            <table>
+                <tr><th>Tool</th><th>Best For</th><th>Pros</th></tr>
+                <tr><td>containerd</td><td>Kubernetes (default)</td><td>Standard, stable</td></tr>
+                <tr><td>Podman</td><td>Rootless, security</td><td>No daemon, daemonless</td></tr>
+                <tr><td>LXC/LXD</td><td>System containers (VM-like)</td><td>Full OS, persistent</td></tr>
+            </table>
+
+            <h3>CNI Alternatives</h3>
+            <table>
+                <tr><th>CNI</th><th>Best For</th><th>Key Feature</th></tr>
+                <tr><td>Cilium</td><td>High performance, observability</td><td>eBPF, Hubble</td></tr>
+                <tr><td>Flannel</td><td>Simple networking</td><td>Lightweight</td></tr>
+                <tr><td>Weave Net</td><td>Quick setup</td><td>Built-in encryption</td></tr>
+            </table>
+        </section>
+
+        <footer>
+            <p>Cloud-Native Deployment Wiki — Part of the <a href="https://github.com/DavoudTeimouri/cloud-native-deployment" style="color: var(--text-accent);">cloud-native-deployment</a> repository</p>
+            <p style="margin-top: 10px;">Licensed under MIT</p>
+        </footer>
+    </div>
+</body>
+</html>

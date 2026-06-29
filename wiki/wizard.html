@@ -1,0 +1,532 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Deployment Wizard</title>
+    <style>
+        :root {
+            --bg-primary: #0d1117;
+            --bg-secondary: #161b22;
+            --bg-tertiary: #21262d;
+            --text-primary: #c9d1d9;
+            --text-secondary: #8b949e;
+            --text-accent: #58a6ff;
+            --border-color: #30363d;
+            --success: #3fb950;
+            --warning: #d29922;
+            --danger: #f85149;
+            --info: #58a6ff;
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            line-height: 1.6;
+            padding: 20px;
+        }
+        .wizard-container {
+            max-width: 900px;
+            margin: 0 auto;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            overflow: hidden;
+        }
+        .wizard-header {
+            background: linear-gradient(135deg, #1a1e2e, #0d1117);
+            padding: 25px 30px;
+            border-bottom: 1px solid var(--border-color);
+        }
+        .wizard-header h1 { color: var(--text-accent); font-size: 1.8em; }
+        .wizard-header p { color: var(--text-secondary); margin-top: 5px; }
+        .progress-bar {
+            display: flex;
+            background: var(--bg-primary);
+            padding: 15px 30px;
+            border-bottom: 1px solid var(--border-color);
+            overflow-x: auto;
+        }
+        .progress-step {
+            flex: 1;
+            text-align: center;
+            padding: 8px;
+            font-size: 0.8em;
+            color: var(--text-secondary);
+            border-bottom: 2px solid transparent;
+            white-space: nowrap;
+        }
+        .progress-step.active {
+            color: var(--text-accent);
+            border-bottom-color: var(--text-accent);
+        }
+        .progress-step.completed {
+            color: var(--success);
+        }
+        .wizard-body { padding: 30px; }
+        .step-content { display: none; }
+        .step-content.active { display: block; }
+        .step-title {
+            color: var(--text-accent);
+            font-size: 1.4em;
+            margin-bottom: 15px;
+            padding-bottom: 10px;
+            border-bottom: 1px solid var(--border-color);
+        }
+        .option-card {
+            background: var(--bg-tertiary);
+            border: 2px solid var(--border-color);
+            border-radius: 8px;
+            padding: 20px;
+            margin: 10px 0;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .option-card:hover { border-color: var(--text-accent); }
+        .option-card.selected { border-color: var(--success); background: rgba(63,185,80,0.1); }
+        .option-card h3 { color: var(--text-primary); margin-bottom: 8px; }
+        .option-card p { color: var(--text-secondary); font-size: 0.9em; }
+        .option-card .badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-size: 0.75em;
+            margin-top: 8px;
+        }
+        .badge-recommended { background: rgba(63,185,80,0.2); color: var(--success); }
+        .badge-advanced { background: rgba(210,153,34,0.2); color: var(--warning); }
+        .badge-dev { background: rgba(88,166,255,0.2); color: var(--info); }
+        .wizard-footer {
+            display: flex;
+            justify-content: space-between;
+            padding: 20px 30px;
+            border-top: 1px solid var(--border-color);
+            background: var(--bg-primary);
+        }
+        .btn {
+            padding: 10px 24px;
+            border-radius: 6px;
+            font-size: 1em;
+            cursor: pointer;
+            border: 1px solid var(--border-color);
+            background: var(--bg-tertiary);
+            color: var(--text-primary);
+            transition: all 0.2s;
+        }
+        .btn:hover { background: var(--border-color); }
+        .btn-primary { background: var(--text-accent); color: #000; border-color: var(--text-accent); }
+        .btn-primary:hover { opacity: 0.9; }
+        .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+        .variable-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 15px 0;
+        }
+        .variable-table td {
+            padding: 8px 12px;
+            border: 1px solid var(--border-color);
+        }
+        .variable-table input {
+            width: 100%;
+            padding: 6px 10px;
+            background: var(--bg-primary);
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+            color: var(--text-primary);
+            font-family: monospace;
+        }
+        .variable-table input:focus { border-color: var(--text-accent); outline: none; }
+        .checkbox-group { margin: 15px 0; }
+        .checkbox-item {
+            display: flex;
+            align-items: center;
+            padding: 10px;
+            background: var(--bg-tertiary);
+            border-radius: 6px;
+            margin: 5px 0;
+            cursor: pointer;
+        }
+        .checkbox-item input { margin-right: 12px; transform: scale(1.2); }
+        .checkbox-item label { cursor: pointer; flex: 1; }
+        .checkbox-item .sublabel { color: var(--text-secondary); font-size: 0.85em; }
+        pre {
+            background: var(--bg-primary);
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            padding: 15px;
+            overflow-x: auto;
+            margin: 15px 0;
+        }
+        code {
+            background: var(--bg-primary);
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-family: 'SFMono-Regular', Consolas, monospace;
+            font-size: 0.9em;
+        }
+        pre code { background: none; padding: 0; }
+        .summary-box {
+            background: rgba(88,166,255,0.1);
+            border: 1px solid var(--info);
+            border-radius: 6px;
+            padding: 20px;
+            margin: 20px 0;
+        }
+        .summary-box h3 { color: var(--text-accent); margin-bottom: 10px; }
+        .summary-box ul { margin-left: 20px; }
+        .hidden { display: none; }
+    </style>
+</head>
+<body>
+    <div class="wizard-container">
+        <div class="wizard-header">
+            <h1>Cloud-Native Deployment Wizard</h1>
+            <p>Answer a few questions to get your personalized deployment guide</p>
+        </div>
+
+        <div class="progress-bar" id="progressBar">
+            <div class="progress-step active" data-step="1">Target</div>
+            <div class="progress-step" data-step="2">Cluster Size</div>
+            <div class="progress-step" data-step="3">Internet</div>
+            <div class="progress-step" data-step="4">DNS</div>
+            <div class="progress-step" data-step="5">GUI</div>
+            <div class="progress-step" data-step="6">Storage</div>
+            <div class="progress-step" data-step="7">Components</div>
+            <div class="progress-step" data-step="8">Hardening</div>
+        </div>
+
+        <div class="wizard-body">
+            <!-- Step 1: Deployment Target -->
+            <div class="step-content active" id="step1">
+                <h2 class="step-title">Step 1: What is your deployment target?</h2>
+                <div class="option-card" data-value="vm" onclick="selectOption(this, 'target')">
+                    <h3>Virtual Machine</h3>
+                    <p>VMs on Proxmox, VMware, KVM, or Hyper-V. Most flexible, easiest to manage.</p>
+                    <span class="badge badge-recommended">Recommended</span>
+                </div>
+                <div class="option-card" data-value="baremetal" onclick="selectOption(this, 'target')">
+                    <h3>Physical Server (Bare Metal)</h3>
+                    <p>Direct hardware access. Best for GPU, NVMe, high-memory workloads.</p>
+                    <span class="badge badge-advanced">Advanced</span>
+                </div>
+            </div>
+
+            <!-- Step 2: Cluster Size -->
+            <div class="step-content" id="step2">
+                <h2 class="step-title">Step 2: How many nodes do you need?</h2>
+                <div class="option-card" data-value="k3s" onclick="selectOption(this, 'cluster')">
+                    <h3>K3s (1-5 nodes)</h3>
+                    <p>Lightweight Kubernetes. Single binary, easy install. Perfect for small clusters, edge, CI/CD.</p>
+                    <span class="badge badge-dev">Simple</span>
+                </div>
+                <div class="option-card" data-value="full" onclick="selectOption(this, 'cluster')">
+                    <h3>Full Kubernetes (5+ nodes)</h3>
+                    <p>Production-grade Kubernetes via KubeSpray. 3 masters + N workers. High availability built-in.</p>
+                    <span class="badge badge-recommended">Production</span>
+                </div>
+            </div>
+
+            <!-- Step 3: Internet Access -->
+            <div class="step-content" id="step3">
+                <h2 class="step-title">Step 3: Do you have internet access?</h2>
+                <div class="option-card" data-value="internet" onclick="selectOption(this, 'internet')">
+                    <h3>Internet Available</h3>
+                    <p>Pull images and packages directly from public sources. No pre-staging needed.</p>
+                </div>
+                <div class="option-card" data-value="airgap" onclick="selectOption(this, 'internet')">
+                    <h3>Air-Gap (No Internet)</h3>
+                    <p>All data must be pre-staged into Nexus and Harbor before disconnecting.</p>
+                    <span class="badge badge-advanced">Requires Pre-staging</span>
+                </div>
+            </div>
+
+            <!-- Step 4: DNS -->
+            <div class="step-content" id="step4">
+                <h2 class="step-title">Step 4: DNS Configuration</h2>
+                <p style="color: var(--text-secondary); margin-bottom: 15px;">DNS is critical for the transparent proxy. Public domain names will resolve to your proxy IP.</p>
+
+                <h3 style="margin: 15px 0 10px;">DNS Server</h3>
+                <div class="option-card" data-value="bind" onclick="selectOption(this, 'dns')">
+                    <h3>BIND Server</h3>
+                    <p>Dedicated BIND DNS server. Most flexible, best for production.</p>
+                    <span class="badge badge-recommended">Recommended</span>
+                </div>
+                <div class="option-card" data-value="coredns" onclick="selectOption(this, 'dns')">
+                    <h3>CoreDNS (K8s)</h3>
+                    <p>Use CoreDNS inside Kubernetes with custom forward zones.</p>
+                </div>
+                <div class="option-card" data-value="hosts" onclick="selectOption(this, 'dns')">
+                    <h3>/etc/hosts (Development)</h3>
+                    <p>Simple, no DNS server needed. Only for development/testing.</p>
+                    <span class="badge badge-dev">Development Only</span>
+                </div>
+
+                <h3 style="margin: 20px 0 10px;">Your DNS Variables</h3>
+                <table class="variable-table">
+                    <tr><td>Proxy IP</td><td><input type="text" id="proxy-ip" value="10.0.0.10" placeholder="Your proxy server IP"></td></tr>
+                    <tr><td>GitLab IP</td><td><input type="text" id="gitlab-ip" value="10.0.0.202" placeholder="Your GitLab server IP"></td></tr>
+                    <tr><td>K8s API IP</td><td><input type="text" id="k8s-api-ip" value="10.0.0.100" placeholder="Your K8s VIP IP"></td></tr>
+                </table>
+            </div>
+
+            <!-- Step 5: GUI -->
+            <div class="step-content" id="step5">
+                <h2 class="step-title">Step 5: Do you need a GUI?</h2>
+                <div class="option-card" data-value="gui-yes" onclick="selectOption(this, 'gui')">
+                    <h3>Yes, install GUI tools</h3>
+                    <p>Rancher (multi-cluster), k9s (terminal), Cockpit (server monitoring), Grafana dashboards.</p>
+                    <span class="badge badge-recommended">Recommended for Beginners</span>
+                </div>
+                <div class="option-card" data-value="gui-no" onclick="selectOption(this, 'gui')">
+                    <h3>No, CLI only</h3>
+                    <p>kubectl, helm, stern. Lighter resource usage, faster for experienced users.</p>
+                    <span class="badge badge-advanced">Advanced</span>
+                </div>
+            </div>
+
+            <!-- Step 6: Storage -->
+            <div class="step-content" id="step6">
+                <h2 class="step-title">Step 6: Which storage backend?</h2>
+                <div class="option-card" data-value="ceph" onclick="selectOption(this, 'storage')">
+                    <h3>Ceph (Full Storage)</h3>
+                    <p>Block (RBD), object (RGW), and filesystem (CephFS) in one cluster. Best for production.</p>
+                    <span class="badge badge-recommended">Recommended</span>
+                </div>
+                <div class="option-card" data-value="minio" onclick="selectOption(this, 'storage')">
+                    <h3>MinIO (Object Only)</h3>
+                    <p>Lightweight S3-compatible object storage. Great for backups and artifacts.</p>
+                </div>
+            </div>
+
+            <!-- Step 7: Components -->
+            <div class="step-content" id="step7">
+                <h2 class="step-title">Step 7: Which components do you need?</h2>
+                <div class="checkbox-group">
+                    <div class="checkbox-item">
+                        <input type="checkbox" id="comp-monitoring" checked>
+                        <label for="comp-monitoring">Monitoring <span class="sublabel">Prometheus + Grafana + Loki</span></label>
+                    </div>
+                    <div class="checkbox-item">
+                        <input type="checkbox" id="comp-gitops" checked>
+                        <label for="comp-gitops">GitOps <span class="sublabel">ArgoCD</span></label>
+                    </div>
+                    <div class="checkbox-item">
+                        <input type="checkbox" id="comp-backup" checked>
+                        <label for="comp-backup">Backup <span class="sublabel">Velero</span></label>
+                    </div>
+                    <div class="checkbox-item">
+                        <input type="checkbox" id="comp-registry" checked>
+                        <label for="comp-registry">Container Registry <span class="sublabel">Harbor</span></label>
+                    </div>
+                    <div class="checkbox-item">
+                        <input type="checkbox" id="comp-source">
+                        <label for="comp-source">Source Control <span class="sublabel">GitLab</span></label>
+                    </div>
+                    <div class="checkbox-item">
+                        <input type="checkbox" id="comp-policy" checked>
+                        <label for="comp-policy">Policy Engine <span class="sublabel">Kyverno</span></label>
+                    </div>
+                    <div class="checkbox-item">
+                        <input type="checkbox" id="comp-logging" checked>
+                        <label for="comp-logging">Log Aggregation <span class="sublabel">Loki</span></label>
+                    </div>
+                    <div class="checkbox-item">
+                        <input type="checkbox" id="comp-ingress" checked>
+                        <label for="comp-ingress">Ingress Controller <span class="sublabel">NGINX Ingress</span></label>
+                    </div>
+                    <div class="checkbox-item">
+                        <input type="checkbox" id="comp-lb" checked>
+                        <label for="comp-lb">Load Balancer <span class="sublabel">MetalLB</span></label>
+                    </div>
+                    <div class="checkbox-item">
+                        <input type="checkbox" id="comp-mesh">
+                        <label for="comp-mesh">Service Mesh <span class="sublabel">Linkerd/Istio</span></label>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Step 8: Hardening -->
+            <div class="step-content" id="step8">
+                <h2 class="step-title">Step 8: Do you need post-deployment hardening?</h2>
+                <div class="option-card" data-value="harden-yes" onclick="selectOption(this, 'harden')">
+                    <h3>Yes, secure my cluster</h3>
+                    <p>Apply Pod Security Standards, NetworkPolicies, RBAC, audit logging, fail2ban, TLS everywhere.</p>
+                    <span class="badge badge-recommended">Recommended for Production</span>
+                </div>
+                <div class="option-card" data-value="harden-no" onclick="selectOption(this, 'harden')">
+                    <h3>No, skip hardening</h3>
+                    <p>You can always apply hardening later using the hardening guide.</p>
+                </div>
+            </div>
+
+            <!-- Summary -->
+            <div class="step-content" id="summary">
+                <h2 class="step-title">Your Deployment Summary</h2>
+                <div class="summary-box" id="summaryContent">
+                    <!-- Filled by JavaScript -->
+                </div>
+                <h3 style="margin: 20px 0 10px;">Generated Commands</h3>
+                <pre><code id="generatedCommands"></code></pre>
+            </div>
+        </div>
+
+        <div class="wizard-footer">
+            <button class="btn" id="prevBtn" onclick="prevStep()" disabled>← Previous</button>
+            <button class="btn btn-primary" id="nextBtn" onclick="nextStep()">Next →</button>
+        </div>
+    </div>
+
+    <script>
+        let currentStep = 1;
+        const totalSteps = 8;
+        const selections = {};
+
+        function selectOption(element, category) {
+            const parent = element.parentElement;
+            parent.querySelectorAll('.option-card').forEach(c => c.classList.remove('selected'));
+            element.classList.add('selected');
+            selections[category] = element.dataset.value;
+        }
+
+        function updateProgress() {
+            document.querySelectorAll('.progress-step').forEach((step, i) => {
+                step.classList.remove('active', 'completed');
+                if (i + 1 === currentStep) step.classList.add('active');
+                else if (i + 1 < currentStep) step.classList.add('completed');
+            });
+        }
+
+        function showStep(step) {
+            document.querySelectorAll('.step-content').forEach(s => s.classList.remove('active'));
+            if (step <= totalSteps) {
+                document.getElementById(`step${step}`).classList.add('active');
+            } else {
+                document.getElementById('summary').classList.add('active');
+                generateSummary();
+            }
+            document.getElementById('prevBtn').disabled = step === 1;
+            document.getElementById('nextBtn').textContent = step > totalSteps ? 'Finish' : 'Next →';
+            updateProgress();
+        }
+
+        function nextStep() {
+            if (currentStep <= totalSteps) {
+                currentStep++;
+                showStep(currentStep);
+            }
+        }
+
+        function prevStep() {
+            if (currentStep > 1) {
+                currentStep--;
+                showStep(currentStep);
+            }
+        }
+
+        function generateSummary() {
+            const summary = document.getElementById('summaryContent');
+            const commands = document.getElementById('generatedCommands');
+
+            const target = selections.target || 'vm';
+            const cluster = selections.cluster || 'full';
+            const internet = selections.internet || 'internet';
+            const dns = selections.dns || 'bind';
+            const gui = selections.gui || 'gui-yes';
+            const storage = selections.storage || 'ceph';
+            const harden = selections.harden || 'harden-yes';
+
+            let html = '<h3>Your Selections:</h3><ul>';
+            html += `<li><strong>Target:</strong> ${target === 'vm' ? 'Virtual Machine' : 'Physical Server (Bare Metal)'}</li>`;
+            html += `<li><strong>Cluster:</strong> ${cluster === 'k3s' ? 'K3s (1-5 nodes)' : 'Full Kubernetes (5+ nodes)'}</li>`;
+            html += `<li><strong>Internet:</strong> ${internet === 'internet' ? 'Available' : 'Air-Gap'}</li>`;
+            html += `<li><strong>DNS:</strong> ${dns === 'bind' ? 'BIND Server' : dns === 'coredns' ? 'CoreDNS' : '/etc/hosts'}</li>`;
+            html += `<li><strong>GUI:</strong> ${gui === 'gui-yes' ? 'Yes (Rancher + k9s)' : 'No (CLI only)'}</li>`;
+            html += `<li><strong>Storage:</strong> ${storage === 'ceph' ? 'Ceph (Full)' : 'MinIO (Object Only)'}</li>`;
+            html += `<li><strong>Hardening:</strong> ${harden === 'harden-yes' ? 'Yes' : 'No'}</li>`;
+
+            const components = [];
+            if (document.getElementById('comp-monitoring').checked) components.push('Monitoring');
+            if (document.getElementById('comp-gitops').checked) components.push('ArgoCD');
+            if (document.getElementById('comp-backup').checked) components.push('Velero');
+            if (document.getElementById('comp-registry').checked) components.push('Harbor');
+            if (document.getElementById('comp-source').checked) components.push('GitLab');
+            if (document.getElementById('comp-policy').checked) components.push('Kyverno');
+            if (document.getElementById('comp-logging').checked) components.push('Loki');
+            if (document.getElementById('comp-ingress').checked) components.push('NGINX Ingress');
+            if (document.getElementById('comp-lb').checked) components.push('MetalLB');
+            if (document.getElementById('comp-mesh').checked) components.push('Service Mesh');
+
+            html += `<li><strong>Components:</strong> ${components.join(', ') || 'None selected'}</li>`;
+            html += '</ul>';
+            summary.innerHTML = html;
+
+            // Generate commands
+            let cmds = '# === Your Personalized Deployment Commands ===\n\n';
+
+            cmds += '# Step 1: Prepare OS (run on ALL servers)\n';
+            cmds += 'ansible-playbook -i inventory/hosts.yml ansible/playbooks/os-preparation.yml\n\n';
+
+            if (cluster === 'full') {
+                cmds += '# Step 2: Deploy Kubernetes\n';
+                cmds += 'ansible-playbook -i inventory/hosts.yml ansible/playbooks/kubespray-deploy.yml\n\n';
+            } else {
+                cmds += '# Step 2: Deploy K3s\n';
+                cmds += 'curl -sfL https://get.k3s.io | sh -\n\n';
+            }
+
+            cmds += '# Step 3: Deploy Storage\n';
+            if (storage === 'ceph') {
+                cmds += 'kubectl apply -f https://raw.githubusercontent.com/rook/rook/master/deploy/examples/operator.yaml\n';
+                cmds += 'kubectl apply -f https://raw.githubusercontent.com/rook/rook/master/deploy/examples/cluster.yaml\n\n';
+            } else {
+                cmds += 'helm install minio minio/minio --namespace minio --create-namespace\n\n';
+            }
+
+            cmds += '# Step 4: Deploy Load Balancer + Ingress\n';
+            cmds += 'kubectl apply -f https://raw.githubusercontent.com/metallb/metallb/v0.14.0/config/manifests/metallb-native.yaml\n';
+            cmds += 'helm install ingress-nginx ingress-nginx/ingress-nginx --namespace ingress-nginx --create-namespace\n\n';
+
+            if (gui === 'gui-yes') {
+                cmds += '# Step 5: Install GUI Tools\n';
+                cmds += 'helm install rancher rancher-latest/rancher --namespace cattle-system --create-namespace\n';
+                cmds += 'curl -sS https://webinstall.dev/k9s | bash\n\n';
+            }
+
+            if (components.includes('Monitoring')) {
+                cmds += '# Install Monitoring\n';
+                cmds += 'helm install kube-prometheus-stack prometheus-community/kube-prometheus-stack --namespace monitoring --create-namespace\n\n';
+            }
+
+            if (components.includes('ArgoCD')) {
+                cmds += '# Install ArgoCD\n';
+                cmds += 'kubectl create namespace argocd\n';
+                cmds += 'kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml\n\n';
+            }
+
+            if (components.includes('Kyverno')) {
+                cmds += '# Install Kyverno\n';
+                cmds += 'helm install kyverno kyverno/kyverno --namespace kyverno --create-namespace\n\n';
+            }
+
+            if (components.includes('Velero')) {
+                cmds += '# Install Velero\n';
+                cmds += 'velero install --provider aws --plugins velero/velero-plugin-for-aws:v1.8.0 --bucket velero-backups --secret-file ./credentials-velero --use-restic\n\n';
+            }
+
+            if (harden === 'harden-yes') {
+                cmds += '# Apply Hardening\n';
+                cmds += 'kubectl apply -f hardening/network-policies.yaml\n';
+                cmds += 'kubectl apply -f hardening/kyverno-policies.yaml\n';
+                cmds += 'sudo ./hardening/os-harden.sh\n\n';
+            }
+
+            cmds += '# Verify\n';
+            cmds += 'kubectl get nodes\n';
+            cmds += 'kubectl get pods --all-namespaces\n';
+
+            commands.textContent = cmds;
+        }
+    </script>
+</body>
+</html>

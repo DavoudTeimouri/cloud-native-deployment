@@ -1,0 +1,12 @@
+title: Cloud-Native Deployment
+description: Enterprise cloud-native deployment guides, wiki, and wizard
+theme: jekyll-theme-cayman
+
+header_pages:
+  - wiki/index.html
+  - wiki/wizard.html
+
+github:
+  is_project_page: true
+  repository_url: https://github.com/DavoudTeimouri/cloud-native-deployment
+  repository_nickname: DavoudTeimouri/cloud-native-deployment
