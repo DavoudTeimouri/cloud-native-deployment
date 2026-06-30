@@ -1,441 +1,388 @@
 # Kubernetes Upgrade Guide
 
-> Covers KubeSpray-based upgrades with air-gap considerations
+## Overview
 
----
+This guide covers upgrading Kubernetes clusters deployed with KubeSpray in an air-gapped environment. It includes pre-upgrade checks, upgrade procedures, post-upgrade verification, and rollback steps.
 
-## 1. Pre-Upgrade Checks
+> **Important**: Always test upgrades in a non-production environment first.
 
-### 1.1 Version Compatibility
+## Prerequisites
+
+- Access to the KubeSpray repository and inventory files
+- Administrative access to all cluster nodes
+- etcd backup procedure tested and verified
+- Air-gap: Updated container images in Harbor before upgrade
+- Maintenance window scheduled
+
+## Supported Upgrade Paths
+
+KubeSpray supports upgrades between minor versions (e.g., v1.29 → v1.30, v1.30 → v1.31). 
+Check [KubeSpray release notes](https://github.com/kubernetes-sigs/kubespray/releases) for specific compatibility.
+
+## Phase 1: Pre-Upgrade Preparation
+
+### 1.1 Backup etcd
 
 ```bash
-# Check current version
-kubectl version --short
-kubelet --version
-
-# Verify target version is supported
-# KubeSpray supports N-1 minor version upgrades
-# e.g., 1.28 → 1.29 is supported, 1.27 → 1.29 is NOT
-
-# Check KubeSpray release notes
-# https://github.com/kubernetes-sigs/kubespray/releases
-```
-
-### 1.2 etcd Backup (CRITICAL)
-
-```bash
-# Backup etcd before any upgrade
-kubectl exec -it etcd-master-0 -n kube-system -- etcdctl \
-  --endpoints=https://127.0.0.1:2379 \
+# On any master node
+ETCDCTL_API=3 etcdctl --endpoints=https://[MASTER_IP]:2379 \
   --cacert=/etc/kubernetes/pki/etcd/ca.crt \
   --cert=/etc/kubernetes/pki/etcd/server.crt \
   --key=/etc/kubernetes/pki/etcd/server.key \
-  snapshot save /tmp/etcd-backup-$(date +%Y%m%d).db
-
-# Copy backup to safe location
-kubectl cp kube-system/etcd-master-0:/tmp/etcd-backup-$(date +%Y%m%d).db \
-  /backup/etcd/etcd-backup-$(date +%Y%m%d).db
+  snapshot save /var/etcd-backup/etcd-snapshot-$(date +%Y%m%d-%H%M%S).db
 
 # Verify backup
-etcdctl snapshot status /backup/etcd/etcd-backup-$(date +%Y%m%d).db --write-out=table
+ETCDCTL_API=3 etcdctl --write-out=table snapshot status /var/etcd-backup/etcd-snapshot-*.db
 ```
 
-### 1.3 Node Health Check
+### 1.2 Backup etcd data directory (optional but recommended)
 
 ```bash
-# All nodes should be Ready
+# On each master node
+systemctl stop etcd
+tar -czf /var/etcd-backup/etcd-data-$(hostname)-$(date +%Y%m%d-%H%M%S).tar.gz /var/lib/etcd/
+systemctl start etcd
+```
+
+### 1.3 Verify Cluster Health
+
+```bash
+# Check node status
 kubectl get nodes
 
-# No pods in CrashLoopBackOff or Pending
-kubectl get pods --all-namespaces | grep -v Running | grep -v Completed
-
-# No ongoing disruptions
-kubectl get poddisruptionbudgets --all-namespaces
-
-# Check certificate expiry (must not expire during upgrade)
-kubeadm certs check-expiration
-```
-
-### 1.4 Resource Check
-
-```bash
-# Ensure sufficient resources for rolling upgrades
-kubectl top nodes
-
-# Check PDBs that might block drain
-kubectl get pdb --all-namespaces
-
-# Verify cluster autoscaler is disabled (if applicable)
-```
-
----
-
-## 2. KubeSpray Upgrade Procedure
-
-### 2.1 Update KubeSpray Code
-
-```bash
-cd /path/to/kubespray
-
-# Fetch latest tags
-git fetch --all --tags
-
-# Checkout target version
-git checkout v2.24.0  # or target version
-
-# Update submodules
-git submodule update --init --recursive
-```
-
-### 2.2 Update Inventory Variables
-
-```bash
-# Edit inventory variables
-vim inventory/mycluster/group_vars/k8s_cluster/k8s-cluster.yml
-
-# Update Kubernetes version
-kube_version: v1.29.0
-
-# Update etcd version if needed
-etcd_version: v3.5.10
-
-# Update CNI version
-calico_version: v3.27.0
-```
-
-### 2.3 Air-Gap: Update Images in Harbor
-
-```bash
-# Download new Kubernetes images on internet-connected machine
-ansible-playbook -i inventory/mycluster/hosts.yaml \
-  download.yml \
-  -e "download_container=true" \
-  -e "download_localhost=true" \
-  -e "download_run_once=true" \
-  -e "kube_version=v1.29.0"
-
-# Upload to Harbor
-for image in $(cat /tmp/kubespray_images.txt); do
-  docker pull $image
-  # Replace registry prefix
-  harbor_image=$(echo $image | sed 's|k8s.gcr.io|harbor.internal/library|g')
-  docker tag $image $harbor_image
-  docker push $harbor_image
-done
-
-# Verify images in Harbor
-curl -u admin:password "https://harbor.internal/api/v2.0/projects/library/repositories" | jq '.[].name'
-```
-
-### 2.4 Run Upgrade Playbook
-
-```bash
-# Dry run first
-ansible-playbook -i inventory/mycluster/hosts.yaml upgrade-cluster.yml \
-  --check --diff
-
-# Execute upgrade (one master at a time, then workers)
-ansible-playbook -i inventory/mycluster/hosts.yaml upgrade-cluster.yml \
-  -e "upgrade_node_confirm=true" \
-  -b
-
-# For specific version
-ansible-playbook -i inventory/mycluster/hosts.yaml upgrade-cluster.yml \
-  -e "kube_version=v1.29.0" \
-  -b
-```
-
-### 2.5 Upgrade Process (What Happens)
-
-KubeSpray upgrades in this order:
-1. **etcd** — upgraded on all masters
-2. **First master** — kube-apiserver, kube-scheduler, kube-controller-manager
-3. **Remaining masters** — one at a time
-4. **Workers** — one at a time (drain → upgrade → uncordon)
-5. **CNI** — Calico/other CNI components
-6. **Add-ons** — CoreDNS, metrics-server, etc.
-
----
-
-## 3. Rolling Upgrade Process (Manual)
-
-If not using KubeSpray upgrade-cluster.yml:
-
-### 3.1 Upgrade First Master
-
-```bash
-# Upgrade kubeadm
-apt-get update
-apt-get install -y kubeadm=1.29.0-00
-
-# Plan upgrade
-kubeadm upgrade plan
-
-# Apply upgrade
-kubeadm upgrade apply v1.29.0
-
-# Upgrade kubelet and kubectl
-apt-get install -y kubelet=1.29.0-00 kubectl=1.29.0-00
-
-# Restart kubelet
-systemctl daemon-reload
-systemctl restart kubelet
-```
-
-### 3.2 Upgrade Additional Masters
-
-```bash
-# On each additional master
-apt-get update
-apt-get install -y kubeadm=1.29.0-00
-
-kubeadm upgrade node
-
-apt-get install -y kubelet=1.29.0-00 kubectl=1.29.0-00
-systemctl daemon-reload
-systemctl restart kubelet
-```
-
-### 3.3 Upgrade Workers
-
-```bash
-# Drain node (from control plane)
-kubectl drain <worker-node> --ignore-daemonsets --delete-emptydir-data
-
-# On the worker node
-apt-get update
-apt-get install -y kubeadm=1.29.0-00
-
-kubeadm upgrade node
-
-apt-get install -y kubelet=1.29.0-00 kubectl=1.29.0-00
-systemctl daemon-reload
-systemctl restart kubelet
-
-# Uncordon (from control plane)
-kubectl uncordon <worker-node>
-```
-
----
-
-## 4. Post-Upgrade Verification
-
-```bash
-# Verify all nodes upgraded
-kubectl get nodes -o wide
-
-# Verify all system pods running
-kubectl get pods -n kube-system
-
-# Verify cluster functionality
-kubectl get --raw '/healthz'
-kubectl get --raw '/livez'
-kubectl get --raw '/readyz'
-
-# Verify CoreDNS
-kubectl get pods -n kube-system -l k8s-app=kube-dns
-kubectl run test --image=busybox:1.28 --restart=Never -it --rm -- nslookup kubernetes.default
-
-# Verify Calico
-kubectl get pods -n kube-system -l k8s-app=calico-node
-calicoctl node status
-
-# Check for deprecated API usage
-kubectl get --raw "/metrics" | grep apiserver_requested_deprecated_apis
-
-# Verify workloads
-kubectl get pods --all-namespaces | grep -v Running | grep -v Completed
+# Check pod status
+kubectl get pods -A -o wide | grep -v Running | grep -v Completed
 
 # Check etcd health
-kubectl exec -it etcd-master-0 -n kube-system -- etcdctl endpoint health --cluster
+ETCDCTL_API=3 etcdctl --endpoints=https://[MASTER_IP]:2379 \
+  --cacert=/etc/kubernetes/pki/etcd/ca.crt \
+  --cert=/etc/kubernetes/pki/etcd/server.crt \
+  --key=/etc/kubernetes/pki/etcd/server.key \
+  endpoint health --cluster
+
+# Check application functionality
+# Run smoke tests against critical applications
 ```
 
----
+### 1.4 Review Release Notes and Deprecations
 
-## 5. Rollback Procedure
+1. Check Kubernetes [CHANGELOG](https://github.com/kubernetes/kubernetes/blob/master/CHANGELOG/CHANGELOG-1.31.md) for version you're upgrading to
+2. Review [KubeSpray release notes](https://github.com/kubernetes-sigs/kubespray/releases) for your target version
+3. Identify deprecated APIs that your workloads might be using:
+   ```bash
+   # Check for deprecated API usage in the last 7 days
+   kubectl get --raw="/apis/apiserver.k8s.io/v1alpha1/removedapi" | jq .
+   ```
 
-### 5.1 Rollback etcd
+### 1.5 Prepare Air-Gap Registry
+
+Before upgrading, ensure Harbor contains the new images:
 
 ```bash
-# Restore from snapshot
-etcdctl snapshot restore /backup/etcd/etcd-backup-<date>.db \
-  --data-dir=/var/lib/etcd-restored
+# Update KubeSpray version
+export KUBESPRAY_VERSION="v2.27.0"  # Target version
 
-# Update etcd manifest to use restored data
-# Edit /etc/kubernetes/manifests/etcd.yaml
-# Change data-dir to /var/lib/etcd-restored
+# Pull new KubeSpray (from internet-connected machine or use existing)
+git clone --branch $KUBESPRAY_VERSION --depth 1 https://github.com/kubernetes-sigs/kubespray.git
+cd kubespray
+
+# Build container images (if not pre-built)
+# In air-gap, use pre-built images from your CI/CD pipeline
+# Otherwise:
+container/build.py  # Requires internet - do this on connected machine
+
+# Push images to Harbor
+# Example script:
+for image in $(cat images.txt); do
+  docker pull $image
+  docker tag $image harbor.internal/$image
+  docker push harbor.internal/$image
+done
 ```
 
-### 5.2 Rollback Control Plane
+### 1.6 Download Required Packages (if not already in Nexus)
+
+Ensure these are available in your Nexus repositories for the target Kubernetes version:
+- containerd
+- runc
+- cni-plugins
+- socat, conntrack, ipset, etc.
+
+## Phase 2: Upgrade Procedure
+
+### 2.1 Update KubeSpray
 
 ```bash
-# Downgrade kubeadm
-apt-get install -y kubeadm=1.28.0-00
+# Update to target version (on your management/workstation)
+cd /path/to/kubespray
+git fetch --all
+git checkout $KUBESPRAY_VERSION
+git pull
 
-# Revert upgrade
-kubeadm upgrade apply v1.28.0 --force
+# Install/update dependencies
+pip install -r requirements.txt
 
-# Downgrade kubelet and kubectl
-apt-get install -y kubelet=1.28.0-00 kubectl=1.28.0-00
-systemctl daemon-reload
-systemctl restart kubelet
+# Copy your inventory to the new version (if upgrading from older clone)
+cp -r /path/to/old/inventory/my-cluster ./inventory/
 ```
 
-### 5.3 Rollback Worker
+### 2.2 Review and Update Inventory Variables
+
+Compare `inventory/sample/group_vars/k8s_cluster.yml` with your existing configuration.
+Pay special attention to:
+- `kube_version` (should match target Kubernetes version)
+- Newly added variables
+- Changed variable names or defaults
+
+### 2.3 Run Pre-Upgrade Checks
 
 ```bash
-kubectl drain <node> --ignore-daemonsets --delete-emptydir-data
-
-# On worker
-apt-get install -y kubeadm=1.28.0-00
-kubeadm upgrade node
-apt-get install -y kubelet=1.28.0-00 kubectl=1.28.0-00
-systemctl daemon-reload
-systemctl restart kubelet
-
-kubectl uncordon <node>
+# Run the upgrade-check playbook
+ansible-playbook -i inventory/my-cluster/hosts.yml \
+  upgrade-cluster.yml \
+  --tags=prechecks
 ```
 
----
+Review the output and fix any issues reported.
 
-## 6. Version-Specific Considerations
+### 2.4 Execute Upgrade (Control Plane First)
 
-### 6.1 API Deprecations
+**Upgrade one master node at a time** to maintain etcd quorum.
 
 ```bash
-# Check for deprecated APIs before upgrade
-kube-no-trees  # or similar tool
-pluto detect-helm-releases
-pluto detect-files -d /manifests/
-
-# Common deprecations to watch:
-# - PodSecurityPolicy → Pod Security Standards (removed in 1.25)
-# - Ingress extensions/v1beta1 → networking.k8s.io/v1 (removed in 1.22)
-# - CronJob batch/v1beta1 → batch/v1 (removed in 1.25)
-# - CRD apiextensions.k8s.io/v1beta1 → v1 (removed in 1.22)
+# Upgrade first master (example: master-01)
+ansible-playbook -i inventory/my-cluster/hosts.yml \
+  upgrade-cluster.yml \
+  --limit=etcd[0] \
+  --tags=control-plane,node
 ```
 
-### 6.2 Feature Gates
+Verify the node is ready:
+```bash
+kubectl get nodes
+# Should show master-01 as Ready
+```
+
+Repeat for each remaining master node:
+```bash
+# For each additional master
+ansible-playbook -i inventory/my-cluster/hosts.yml \
+  upgrade-cluster.yml \
+  --limit=etcd[1] \
+  --tags=control-plane,node
+```
+
+### 2.5 Upgrade etcd (if version changed)
+
+If the etcd version is changing between Kubernetes versions:
+```bash
+ansible-playbook -i inventory/my-cluster/hosts.yml \
+  upgrade-cluster.yml \
+  --tags=etcd
+```
+
+### 2.6 Upgrade Worker Nodes
+
+Upgrade workers in batches (max 20% at a time for large clusters):
+```bash
+# Update first 20% of workers
+ansible-playbook -i inventory/my-cluster/hosts.yml \
+  upgrade-cluster.yml \
+  --limit=kube_node[0:4] \
+  --tags=node
+```
+
+Monitor progress:
+```bash
+watch -n 5 "kubectl get nodes | grep -E '(NotReady|Ready)'"
+```
+
+Continue with remaining batches until all workers are upgraded.
+
+### 2.7 Upgrade Network Plugin and Other Components
 
 ```bash
-# Check feature gates that may change defaults
-kubectl get --raw /metrics | grep feature_gate
+# Update CNI (Calico in our case)
+ansible-playbook -i inventory/my-cluster/hosts.yml \
+  upgrade-cluster.yml \
+  --tags=network-node
 
-# Common changes:
-# - CSIMigration: enabled by default in 1.25+
-# - EphemeralContainers: GA in 1.25+
-# - PodSecurity: GA in 1.25+
+# Update kube-proxy
+ansible-playbook -i inventory/my-cluster/hosts.yml \
+  upgrade-cluster.yml \
+  --tags=kube-proxy
 ```
 
----
+## Phase 3: Post-Upgrade Verification
 
-## 7. OS Upgrade (Ubuntu 22.04 → 24.04 or in-place dist-upgrade)
-
-### 7.1 Pre-OS-Upgrade Checks
+### 3.1 Verify Node Status
 
 ```bash
-# Check current version
-lsb_release -a
-cat /etc/os-release
-
-# Backup critical configs
-sudo tar -czf /backup/etc-backup-$(date +%Y%m%d).tar.gz /etc/ /var/lib/kubelet/ /var/lib/etcd/
-
-# Disable auto-updates
-sudo systemctl stop unattended-upgrades
-sudo systemctl disable unattended-upgrades
-
-# Note installed packages
-dpkg --get-selections > /backup/packages-before-upgrade.txt
-
-# Check free space
-df -h /
-apt-get check
+kubectl get nodes
+# All nodes should show Ready
+kubectl get nodes -o wide
+# Check Kubelet and Kube-proxy versions
 ```
 
-### 7.2 In-Place OS Upgrade (Recommended: Same Version)
+### 3.2 Verify System Pods
 
 ```bash
-# Update existing packages
-sudo apt-get update
-sudo apt-get upgrade -y
-sudo apt-get dist-upgrade -y
-
-# Install pending kernel
-sudo apt-get install -y linux-generic
-
-# Reboot
-sudo reboot
+kubectl get pods -n kube-system
+# All should be Running or Completed
 ```
 
-### 7.3 Major Version Upgrade (22.04 → 24.04)
-
-> **WARNING**: Perform on management server first, then K8s control plane (one node at a time), then workers.
+### 3.3 Verify CoreDNS
 
 ```bash
-# 1. Upgrade manager tool
-sudo apt-get install -y update-manager-core
-
-# 2. Check upgrade availability
-sudo do-release-upgrade -c
-
-# 3. Drain the node
-kubectl drain <node> --ignore-daemonsets --delete-emptydir-data
-
-# 4. Perform upgrade
-sudo do-release-upgrade
-
-# 5. Reboot
-sudo reboot
-
-# 6. Verify
-lsb_release -a
-kubectl uncordon <node>
-
-# 7. Verify kubelet starts
-systemctl status kubelet
+kubectl get pods -n kube-system -l k8s-app=kube-dns
+kubectl run -it --rm --restart=Never --image=alpine:3.18 dns-test -- nslookup kubernetes.default.svc.cluster.local
 ```
 
-### 7.4 Post-OS-Upgrade Verification
+### 3.4 Verify kube-proxy
 
 ```bash
-# Verify OS version
-lsb_release -a
-
-# Verify kernel
-uname -r
-
-# Verify services
-systemctl is-active kubelet
-systemctl is-active containerd
-systemctl is-active chrony
-
-# Verify packages
-dpkg --get-selections | diff /backup/packages-before-upgrade.txt -
-
-# Verify swap still disabled
-free -h | grep Swap
-
-# Verify kernel modules
-lsmod | grep -E "br_netfilter|overlay"
-
-# Verify sysctl
-sysctl net.ipv4.ip_forward
-sysctl net.bridge.bridge-nf-call-iptables
-
-# Verify node health
-kubectl get node <node-name>
+# Check iptables rules on a node
+ssh node-01 "iptables -L -t nat | grep KUBE-SVC"
 ```
 
----
+### 3.5 Verify Application Functionality
 
-## 8. Air-Gap Upgrade Checklist
+Run your smoke tests or validation scripts:
+```bash
+# Example: check that ingress controller is working
+curl -I https://your-app.internal
+# Should return 200 or appropriate redirect
 
-- [ ] Download all new container images to local machine
-- [ ] Push images to Harbor registry
-- [ ] Update `download_image_tag` and related vars in inventory
-- [ ] Update `registry_host` to point to Harbor
-- [ ] Verify image pull secrets are configured
-- [ ] Test image pull on one node: `crictl pull harbor.internal/library/kube-apiserver:v1.29.0`
-- [ ] Run upgrade with `-e "download_run_once=false"` to use local registry
-- [ ] Verify all images resolve: `ansible-playbook -i inventory/mycluster/hosts.yaml download.yml --check`
+# Check that monitoring is scraping
+curl -s http://prometheus.monitoring:9090/api/v1/targets | jq .
+```
+
+### 3.6 Verify etcd Version
+
+```bash
+ETCDCTL_API=3 etcdctl --endpoints=https://[MASTER_IP]:2379 \
+  --cacert=/etc/kubernetes/pki/etcd/ca.crt \
+  --cert=/etc/kubernetes/pki/etcd/server.crt \
+  --key=/etc/kubernetes/pki/etcd/server.key \
+  version
+```
+
+## Phase 4: Rollback Procedure (If Needed)
+
+> **Warning**: Rollback is complex and should be a last resort. Prefer fixing forward if possible.
+
+### 4.1 When to Rollback
+- Control plane instability
+- etcd corruption
+- Major application incompatibility
+- Multiple node failures post-upgrade
+
+### 4.2 Rollback Steps
+
+#### 4.2.1 Stop Kubernetes Services
+```bash
+# On all nodes
+systemctl stop kubelet
+systemctl stop containerd
+```
+
+#### 4.2.2 Restoref
+# Restore etcd data from pre-upgrade backup
+# On each master node:
+systemctl stop etcd
+rm -rf /var/lib/etcd/*
+tar -xzf /var/etcd-backup/etcd-data-<hostname>-<timestamp>.tar.gz -C /
+systemctl start etcd
+```
+
+#### 4.2.3 Revert to Previous KubeSpray Version
+```bash
+cd /path/to/kubespray
+git checkout <previous-version>
+git pull
+```
+
+#### 4.2.4 Re-run Deployment with Previous Version
+```bash
+ansible-playbook -i inventory/my-cluster/hosts.yml cluster.yml
+```
+
+#### 4.2.5 Validate
+Repeat verification steps from Section 3.
+
+## Version-Specific Notes
+
+### v1.29 → v1.30
+- Deprecated APIs: 
+  - `PodDisruptionBus` policy/v1beta1 → policy/v1
+  - `IPAddress` policy/v1alpha1 → removed
+- Feature gates changed
+- containerd update to v1.7.x
+
+### v1.30 → v1.31
+- Dockershim removed long ago, but check for any residual Docker usage
+- CSI migration advances
+- API priority and fairness graduated to GA
+- etcd upgraded to v3.5.x
+
+## Troubleshooting
+
+### Failed Node Join
+```bash
+# Common causes:
+# 1. Certificate mismatch
+kubeadm alpha phase certs all
+# 2. Container runtime version mismatch
+crictl version
+# 3. CNI plugin not installed
+ls /opt/cni/bin/
+# 4. kubelet configuration issues
+journalctl -u kubelet -f
+```
+
+### etcd Quorum Loss
+If you lose quorum during upgrade:
+1. Restore from etcd snapshot
+2. Rebuild cluster with `--reset=true` if needed
+3. Rejoin nodes one by one
+
+### Application Issues Post-Upgrade
+1. Check for deprecated API usage in logs
+2. Verify PodSecurityPolicy → PodSecurity Standards migration
+3. Check admission webhook configurations
+4. Validate CNI plugin compatibility
+
+## Maintenance Tips
+
+1. **Regular etcd snapshots**: Automate with cron
+2. **Version pinning**: Keep track of exact versions in use
+3. **Test upgrades**: Maintain a staging cluster that mirrors production
+4. **Document everything**: Keep runbooks updated
+5. **Monitor upgrade notifications**: Subscribe to Kubernetes and KubeSpray release announcements
+
+## Appendix: Useful Commands
+
+### Check Component Versions
+```bash
+# kubelet
+kubelet --version
+# kubectl
+kubectl version --client
+# kube-proxy
+kube-proxy --version
+# containerd
+ctr version
+# cni
+ls /opt/cni/bin/
+```
+
+### View Kubernetes Version Skew
+```bash
+kubectl version
+# Shows client and server version
+```
+
+### List Nodes by Version
+```bash
+kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.name}{\"\t\"}{.status.nodeInfo.kubeletVersion}{\"\n\"}{end}'
+```

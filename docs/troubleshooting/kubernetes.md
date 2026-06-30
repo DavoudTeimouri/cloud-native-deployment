@@ -1,805 +1,276 @@
 # Kubernetes Troubleshooting Guide
 
-> Decision-tree style: **Symptom → Possible Causes → Diagnostic Commands → Resolution**
+## Overview
 
----
+This guide provides systematic troubleshooting procedures for Kubernetes clusters in an air-gapped environment. Follow the flow-chart style approach: Symptom → Possible Causes → Diagnostic Commands → Resolution.
 
 ## 1. Node Issues
 
-### 1.1 Node NotReady
-
-**Symptom:** `kubectl get nodes` shows `NotReady`
-
+### Symptom: Node Shows NotReady
 **Possible Causes:**
-- kubelet crashed or stopped
-- Container runtime (containerd/CRI-O) down
-- Network plugin (Calico) not running
-- Disk pressure / memory pressure / PID pressure
-- Certificate expiry
+- Kubelet not running
+- Network issues (CNI not configured)
+- Certificate expiration
+- Disk pressure/Memory pressure/PID pressure
+- Container runtime issues
 
 **Diagnostic Commands:**
 ```bash
-# Check node conditions
+# Check node status details
 kubectl describe node <node-name>
 
 # Check kubelet status
-ssh <node> systemctl status kubelet
-ssh <node> journalctl -u kubelet --since "10 minutes ago" --no-pager
+systemctl status kubelet
+journalctl -u kubelet -f
 
 # Check container runtime
-ssh <node> systemctl status containerd
-ssh <node> crictl info
+systemctl status containerd
+crictl info
+crictl ps
 
-# Check kubelet logs
-ssh <node> journalctl -u kubelet -f
+# Check certificates
+kubectl get csr
+openssl x509 -in /etc/kubernetes/pki/apiserver.crt -text -noout | grep NotAfter
 
-# Check certificate expiry
-ssh <node> kubeadm certs check-expiration
-# or
-ssh <node> openssl x509 -in /var/lib/kubelet/pki/kubelet-client-current.pem -noout -dates
+# Check resource pressure
+kubectl describe node <node-name> | grep -A5 "Conditions"
+
+# Check CNI plugins
+ls /opt/cni/bin/
+cat /etc/cni/net.d/10-calico.conflist
 ```
 
 **Resolution:**
-```bash
-# Restart kubelet
-ssh <node> systemctl restart kubelet
+- If kubelet failed: `systemctl restart kubelet`
+- If container runtime issue: `systemctl restart containerd`
+- If certificate expired: renew via kubeadm or replace manually
+- If resource pressure: resolve underlying issue (disk full, memory leak, etc.)
+- If CNI missing: reinstall CNI plugins
 
-# If kubelet won't start, check config
-ssh <node> kubelet --config=/var/lib/kubelet/config.yaml --dry-run
-
-# Renew certificates if expired
-ssh <node> kubeadm certs renew all
-ssh <node> systemctl restart kubelet
-
-# If containerd is down
-ssh <node> systemctl restart containerd
-ssh <node> crictl pods  # verify pods are listed
-```
-
----
-
-### 1.2 Disk Pressure
-
-**Symptom:** Node condition `DiskPressure=True`, pods being evicted
+### Symptom: Node Shows DiskPressure
+**Possible Causes:**
+- /var/lib/kubelet or /var/lib/containerd filling up
+- Log rotation not configured
+- Image garbage collection not working
+- Etcd database growth
 
 **Diagnostic Commands:**
 ```bash
 # Check disk usage
-ssh <node> df -h
-ssh <node> du -sh /var/lib/containerd/*
-ssh <node> du -sh /var/log/pods/*
-ssh <node> du -sh /var/lib/kubelet/*
+df -h
+du -sh /var/lib/* | sort -hr | head -10
 
-# Check inode usage
-ssh <node> df -i
+# Check kubelet garbage collection
+kubectl get node <node-name> -o jsonpath='{.status.nodeInfo.kubeletVersion}'
+kubectl describe node <node-name> | grep -i garbage
 
-# Find large files
-ssh <node> find /var -type f -size +100M -exec ls -lh {} \;
+# Check containerd garbage collection
+crictl info | grep -i runtime
+
+# Check log sizes
+du -sh /var/log/* | sort -hr | head -5
 ```
 
 **Resolution:**
-```bash
-# Clean up container images
-ssh <node> crictl images
-ssh <node> crictl rmi --prune
+- Clean up old images: `crictl rmi -p`
+- Adjust garbage collection thresholds in kubelet config
+- Configure log rotation
+- Expand disk or clean unnecessary files
 
-# Clean up logs
-ssh <node> journalctl --vacuum-time=3d
-ssh <node> find /var/log/pods -type f -mtime +7 -delete
-
-# Clean up dead containers
-ssh <node> crictl rm $(crictl ps -a -q --state=exited)
-
-# Adjust eviction thresholds (kubelet flag)
-# --eviction-hard=memory.available<500Mi,nodefs.available<10%
-# --eviction-minimum-reclaim=nodefs.available=500Mi
-```
-
----
-
-### 1.3 Memory Pressure
-
-**Symptom:** `MemoryPressure=True`, OOM kills, pods evicted
+### Symptom: Node Shows MemoryPressure
+**Possible Causes:**
+- Pods using too much memory
+- Node processes consuming memory
+- Kernel slab usage high
 
 **Diagnostic Commands:**
 ```bash
-# Check memory usage
-ssh <node> free -h
-ssh <node> cat /proc/meminfo | grep -E "MemTotal|MemFree|MemAvailable|SwapTotal"
+# Check memory usage per pod
+kubectl top pod -A --sort-by=memory
 
-# Check OOM events
-ssh <node> dmesg | grep -i "oom\|out of memory"
-ssh <node> journalctl -k | grep -i oom
+# Check node processes
+ps aux --sort=-%mem | head -10
 
-# Check pod memory usage
-kubectl top pods --all-namespaces --sort-by=memory
+# Check slab usage
+cat /proc/slabinfo | head -20
+
+# Check for memory leaks in system services
+journalctl -u <service> -f
 ```
 
 **Resolution:**
-```bash
-# Drain node to move workloads
-kubectl drain <node> --ignore-daemonsets --delete-emptydir-data
+- Identify and kill/restart memory-heavy pods
+- Increase node memory or reduce pod density
+- Restart problematic system services
+- Check for application memory leaks
 
-# Check for memory leaks in system pods
-kubectl describe node <node> | grep -A 20 "Allocated resources"
-
-# Adjust kubelet reservation
-# --kube-reserved=cpu=500m,memory=1Gi
-# --system-reserved=cpu=500m,memory=1Gi
-```
-
----
-
-### 1.4 PID Pressure
-
-**Symptom:** `PIDPressure=True`, cannot create new processes
+### Symptom: Node Shows PIDPressure
+**Possible Causes:**
+- Too many processes created (fork bomb)
+- Container without PID limits
+- System service spamming processes
 
 **Diagnostic Commands:**
 ```bash
-# Check PID usage
-ssh <node> cat /proc/sys/kernel/pid_max
-ssh <node> ps aux | wc -l
-ssh <node> systemctl status kubelet | grep -i pids
+# Check process count
+ps -eLf | wc -l
 
-# Check cgroup pids
-ssh <node> cat /sys/fs/cgroup/pids/kubepods/pids.current
-ssh <node> cat /sys/fs/cgroup/pids/kubepods/pids.max
+# Check processes per container
+crictl ps -q | xargs crictl inspect --output '{{.info.pid}} {{.status.startTimestamp}}' | sort
+
+# Check systemd services with high process count
+systemctl status | grep -E "Tasks:.*[0-9]+"
 ```
 
 **Resolution:**
-```bash
-# Increase pids limit for kubelet
-# In /var/lib/kubelet/config.yaml:
-# maxPods: 200
-# pidsLimit: -1  (or a high value)
-
-# Kill runaway processes
-ssh <node> ps aux --sort=-%cpu | head -20
-ssh <node> pkill -f <offending-process>
-```
-
----
+- Identify problematic pod/container and restart
+- Add PID limits to pod security context
+- Fix spawning service
+- Increase kernel.pid_max if needed (sysctl)
 
 ## 2. Pod Issues
 
-### 2.1 CrashLoopBackOff
-
-**Symotom:** Pod status `CrashLoopBackOff`, restart count increasing
-
+### Symptom: Pod in CrashLoopBackOff
 **Possible Causes:**
-- Application error / panic
-- Missing config / environment variables
-- Liveness probe too aggressive
-- Init container failing
-- Resource limits too low
+- Application crashing immediately
+- Missing configuration or secrets
+- Resource limits too low (OOMKilled)
+- Entrypoint/script errors
+- Volume mount issues
 
 **Diagnostic Commands:**
 ```bash
-# Check pod events
-kubectl describe pod <pod> -n <namespace>
+# Get recent events
+kubectl describe pod <pod-name> -n <namespace> | grep -A20 Events
 
-# Check current container logs
-kubectl logs <pod> -n <namespace> --tail=100
-
-# Check previous (crashed) container logs
-kubectl logs <pod> -n <namespace> --previous
-
-# Check all containers in pod
-kubectl logs <pod> -n <namespace> --all-containers
-
-# Check events
-kubectl get events -n <namespace> --field-selector involvedObject.name=<pod> --sort-by='.lastTimestamp'
-```
-
-**Resolution:**
-```bash
-# Fix application config
-kubectl edit deployment <deployment> -n <namespace>
-
-# Adjust liveness probe
-kubectl patch deployment <deployment> -n <namespace> --type='json' -p='[
-  {"op":"replace","path":"/spec/template/spec/containers/0/livenessProbe/initialDelaySeconds","value":30}
-]'
+# Check logs (previous instance)
+kubectl logs <pod-name> -n <namespace> --previous
 
 # Check resource limits
-kubectl describe pod <pod> -n <namespace> | grep -A 5 "Limits\|Requests"
+kubectl get pod <pod-name> -n <namespace> -o yaml | grep -A5 -B5 "resources"
 
-# Debug interactively
-kubectl debug -it <pod> -n <namespace> --image=busybox --target=<container>
+# Check volume mounts
+kubectl get pod <pod-name> -n <namespace> -o yaml | grep -A10 -B5 "volumeMounts"
+
+# Check container image
+kubectl get pod <pod-name> -n <namespace> -o jsonpath='{.spec.containers[0].image}'
 ```
 
----
+**Resolution:**
+- Fix application crash (check logs)
+- Add missing config/secrets
+- Increase memory limits if OOMKilled
+- Fix entrypoint or script permissions
+- Verify volume mounts exist and are accessible
 
-### 2.2 ImagePullBackOff / ErrImagePull
-
-**Symptom:** Pod status `ImagePullBackOff` or `ErrImagePull`
-
+### Symptom: Pod in ImagePullBackOff
 **Possible Causes:**
-- Image doesn't exist in registry
-- Registry authentication failure
+- Image does not exist in registry
+- Registry authentication failed
 - Network connectivity to registry
-- Air-gap: image not mirrored in Harbor
-- Image tag typo
+- Image pull policy issues
 
 **Diagnostic Commands:**
 ```bash
-# Check pod events for pull error
-kubectl describe pod <pod> -n <namespace> | grep -A 10 "Events:"
+# Describe pod for events
+kubectl describe pod <pod-name> -n <namespace> | grep -A10 -B5 "Pulling\|Failed\|BackOff"
 
-# Test registry connectivity
-kubectl run test --image=busybox --restart=Never -it --rm -- sh -c 'wget -qO- https://harbor.internal:443/v2/'
+# Check image name and tag
+kubectl get pod <pod-name> -n <namespace> -o jsonpath='{.spec.containers[0].image}'
 
-# Check image pull secrets
-kubectl get pod <pod> -n <namespace> -o jsonpath='{.spec.imagePullSecrets}'
+# Try to pull image manually (from node)
+crictl pull <image>
+# or
+docker pull <image>
 
-# Test pull manually on node
-ssh <node> crictl pull <image>:<tag>
+# Check registry credentials
+kubectl get secret <registry-secret> -n <namespace> -o yaml
 ```
 
 **Resolution:**
-```bash
-# Create/update image pull secret
-kubectl create secret docker-registry regcred \
-  --docker-server=harbor.internal \
-  --docker-username=admin \
-  --docker-password='<password>' \
-  -n <namespace>
+- Correct image name/tag
+- Ensure image exists in Harbor/Nexus
+- Fix registry credentials in secret
+- Verify network connectivity to registry
+- Set imagePullPolicy: IfNotPresent (if image exists locally)
 
-kubectl patch serviceaccount default -n <namespace> \
-  -p '{"imagePullSecrets": [{"name": "regcred"}]}'
-
-# For air-gap: verify image exists in Harbor
-curl -u admin:password https://harbor.internal/api/v2.0/projects/<project>/repositories/<repo>/artifacts
-
-# Mirror missing image
-# On a machine with internet access:
-docker pull <image>:<tag>
-docker tag <image>:<tag> harbor.internal/<project>/<image>:<tag>
-docker push harbor.internal/<project>/<image>:<tag>
-```
-
----
-
-### 2.3 Pod Pending
-
-**Symptom:** Pod stuck in `Pending` state
-
+### Symptom: Pod in Pending (unschedulable)
 **Possible Causes:**
-- No node with sufficient resources
-- Node selector / affinity mismatch
-- Taints without tolerations
-- PVC not bound
-- Pod topology spread constraints
+- Insufficient resources (CPU/Memory)
+- Node selector/tolerations mismatch
+- Volume binding failure
+- Taints on nodes
+- PriorityClass issues
 
 **Diagnostic Commands:**
 ```bash
-# Check scheduling events
-kubectl describe pod <pod> -n <namespace> | grep -A 15 "Events:"
+# Check scheduler events
+kubectl describe pod <pod-name> -n <namespace> | grep -A10 -B5 "Events"
 
-# Check resource availability
-kubectl top nodes
-kubectl describe node <node> | grep -A 10 "Allocated resources"
+# Check node resources
+kubectl get nodes -o jsonpath='{.items[*].status.allocatable}'
 
-# Check PVC status
+# Check node labels and taints
+kubectl get nodes --show-labels
+kubectl get nodes -o jsonpath='{.items[*].spec.taints}'
+
+# Check PVC status if volume bound
 kubectl get pvc -n <namespace>
-kubectl describe pvc <pvc-name> -n <namespace>
-
-# Check taints
-kubectl get nodes -o custom-columns=NAME:.metadata.name,TAINTS:.spec.taints
 ```
 
 **Resolution:**
-```bash
-# Add node if resources insufficient
-# Or adjust resource requests
-kubectl edit deployment <deployment> -n <namespace>
+- Add more nodes or reduce resource requests
+- Fix node selector or tolerations
+- Ensure storage class exists and PV available
+- Remove taints or add tolerations
+- Adjust PriorityClass or create one
 
-# Add toleration for taints
-kubectl edit pod <pod> -n <namespace>
-# Add:
-# tolerations:
-# - key: "node-role.kubernetes.io/control-plane"
-#   operator: "Exists"
-#   effect: "NoSchedule"
-
-# Fix PVC - check StorageClass
-kubectl get sc
-kubectl edit pvc <pvc-name> -n <namespace>
-```
-
----
-
-### 2.4 Pod Evicted
-
-**Symptom:** Pod status `Evicted`, node under pressure
+### Symptom: Pod Evicted
+**Possible Causes:**
+- Node under disk pressure
+- Node under memory pressure
+- Node under PID pressure
+- Kubelet eviction thresholds exceeded
 
 **Diagnostic Commands:**
 ```bash
-# Check eviction reason
-kubectl get events -n <namespace> --field-selector reason=Evicted --sort-by='.lastTimestamp'
+# Check why pod was evicted
+kubectl get pod <pod-name> -n <namespace> -o yaml | grep -A5 -B5 "message"
 
 # Check node conditions
-kubectl describe node <node> | grep "Conditions" -A 10
+kubectl describe node <node-name> | grep -A5 -B5 "Conditions"
 
-# Check resource usage
-kubectl top node <node>
+# Check kubelet eviction settings
+ps -ef | grep kubelet
 ```
 
 **Resolution:**
-```bash
-# Address root cause (disk/memory/PID pressure) per sections 1.2-1.4
-# Increase resource requests/limits
-# Add more nodes
-# Configure priority classes to protect critical pods
-```
+- Resolve underlying pressure (disk, memory, PID)
+- Increase eviction thresholds if appropriate (not recommended)
+- Add more resources to node
+- Move critical pods to separate node group with higher eviction tolerance
 
----
+## 3. Networking Issues
 
-## 3. Service & Networking Issues
-
-### 3.1 DNS Resolution Failure
-
-**Symptom:** Pods cannot resolve service names or external domains
+### Symptom: Service DNS Not Resolving
+**Possible Causes:**
+- CoreDNS pods not running
+- Network policy blocking DNS
+- Service not created or wrong namespace
+- Client in hostNetwork mode
 
 **Diagnostic Commands:**
 ```bash
-# Check CoreDNS pods
+# Check CoreDNS status
 kubectl get pods -n kube-system -l k8s-app=kube-dns
-kubectl logs -n kube-system -l k8s-app=kube-dns --tail=50
 
-# Test DNS from a pod
-kubectl run dns-test --image=busybox:1.28 --restart=Never -it --rm -- nslookup kubernetes.default
-kubectl run dns-test --image=busybox:1.28 --restart=Never -it --rm -- nslookup google.com
+# Test DNS resolution from pod
+kubectl run -it --rm --image=alpine:3.18 dns-test -- nslookup <service>.<namespace>.svc.cluster.local
 
-# Check CoreDNS config
-kubectl get configmap coredns -n kube-system -o yaml
+# Check CoreDNS logs
+kubectl logs -n kube-system -l k8s-app=kube-dns
 
-# Check /etc/resolv.conf inside pod
-kubectl exec <pod> -n <namespace> -- cat /etc/resolv.conf
+# Check service exists service getAddress ' get
 ```
 
-**Resolution:**
-```bash
-# Restart CoreDNS
-kubectl rollout restart deployment coredns -n kube-system
-
-# Check for CoreDNS crash loop
-kubectl logs -n kube-system -l k8s-app=kube-dns --previous
-
-# Verify CoreDNS service
-kubectl get svc -n kube-system kube-dns
-kubectl get endpoints -n kube-system kube-dns
-
-# Fix CoreDNS config if needed
-kubectl edit configmap coredns -n kube-system
-# Ensure forward points to correct upstream DNS
-# forward . /etc/resolv.conf
-```
-
----
-
-### 3.2 Service Connectivity Issues
-
-**Symptom:** Cannot reach a Service from within or outside the cluster
-
-**Diagnostic Commands:**
-```bash
-# Check service endpoints
-kubectl get endpoints <service> -n <namespace>
-kubectl describe svc <service> -n <namespace>
-
-# Check if endpoints are populated (empty = no matching pods)
-kubectl get endpoints <service> -n <namespace> -o wide
-
-# Test from a pod
-kubectl run test --image=busybox --restart=Never -it --rm -- wget -qO- http://<service>.<namespace>.svc.cluster.local:<port>
-
-# Check network policies
-kubectl get networkpolicies -n <namespace>
-kubectl describe networkpolicy <policy> -n <namespace>
-```
-
-**Resolution:**
-```bash
-# Verify pod labels match service selector
-kubectl get pods -n <namespace> --show-labels
-kubectl get svc <service> -n <namespace> -o jsonpath='{.spec.selector}'
-
-# Check if pods are ready
-kubectl get pods -n <namespace> -l <selector-labels>
-
-# Check Calico network policy
-calicoctl get networkpolicy -n <namespace> -o wide
-```
-
----
-
-### 3.3 Port Conflicts
-
-**Symptom:** Service not binding, port already in use
-
-**Diagnostic Commands:**
-```bash
-# Check NodePort range conflict
-kubectl get svc --all-namespaces -o jsonpath='{range .items[*]}{.spec.ports[*].nodePort}{"\n"}{end}' | sort -n
-
-# Check host port conflicts
-ssh <node> ss -tlnp | grep <port>
-```
-
----
-
-## 4. etcd Issues
-
-### 4.1 Quorum Loss
-
-**Symptom:** `etcdctl endpoint health` shows unhealthy members, cluster unavailable
-
-**Diagnostic Commands:**
-```bash
-# Check etcd member list
-kubectl exec -it etcd-master-0 -n kube-system -- etcdctl \
-  --cacert=/etc/kubernetes/pki/etcd/ca.crt \
-  --cert=/etc/kubernetes/pki/etcd/server.crt \
-  --key=/etc/kubernetes/pki/etcd/server.key \
-  member list
-
-# Check endpoint health
-kubectl exec -it etcd-master-0 -n kube-system -- etcdctl \
-  --endpoints=https://127.0.0.1:2379 \
-  --cacert=/etc/kubernetes/pki/etcd/ca.crt \
-  --cert=/etc/kubernetes/pki/etcd/server.crt \
-  --key=/etc/kubernetes/pki/etcd/server.key \
-  endpoint health --cluster
-
-# Check etcd logs
-ssh <master-node> crictl logs $(crictl ps --label io.kubernetes.container.name=etcd -q) --tail=100
-```
-
-**Resolution:**
-```bash
-# If one member is down, restart it
-ssh <failed-master> systemctl restart etcd
-# or if static pod:
-ssh <master> docker restart $(docker ps | grep etcd | awk '{print $1}')
-
-# If majority is lost, restore from snapshot
-etcdctl snapshot restore /backup/etcd-snapshot.db \
-  --data-dir=/var/lib/etcd-restored \
-  --name=master-1 \
-  --initial-cluster=master-1=https://10.0.0.1:2380,master-2=https://10.0.0.2:2380 \
-  --initial-cluster-token=etcd-cluster \
-  --initial-advertise-peer-urls=https://10.0.0.1:2380
-
-# Remove failed member and re-add
-etcdctl member remove <member-id>
-etcdctl member add master-3 --peer-urls=https://10.0.0.3:2380
-```
-
----
-
-### 4.2 Slow etcd Performance
-
-**Symptom:** API server slow, high latency on etcd requests
-
-**Diagnostic Commands:**
-```bash
-# Check etcd disk latency
-kubectl exec -it etcd-master-0 -n kube-system -- etcdctl \
-  --cacert=/etc/kubernetes/pki/etcd/ca.crt \
-  --cert=/etc/kubernetes/pki/etcd/server.crt \
-  --key=/etc/kubernetes/pki/etcd/server.key \
-  check perf
-
-# Check disk IO
-ssh <master> iostat -x 1 5
-
-# Check etcd metrics
-curl -k https://127.0.0.1:2379/metrics | grep etcd_disk_wal_fsync_duration
-```
-
-**Resolution:**
-```bash
-# Move etcd to SSD/NVMe if on spinning disk
-# Defrag etcd
-etcdctl defrag --cluster
-
-# Compact etcd
-etcdctl compact $(etcdctl endpoint status --write-out=table | awk '{print $8}' | head -1)
-
-# Increase etcd quota
-# --quota-backend-bytes=8589934592  (8GB)
-```
-
----
-
-### 4.3 etcd Certificate Expiry
-
-**Diagnostic Commands:**
-```bash
-# Check certificate dates
-kubectl exec -it etcd-master-0 -n kube-system -- \
-  openssl x509 -in /etc/kubernetes/pki/etcd/server.crt -noout -dates
-
-# Or on host
-ssh <master> openssl x509 -in /etc/kubernetes/pki/etcd/server.crt -noout -dates
-```
-
-**Resolution:**
-```bash
-# Renew via kubeadm
-kubeadm certs renew etcd-peer
-kubeadm certs renew etcd-server
-kubeadm certs renew etcd-healthcheck-client
-
-# Restart etcd and API server
-ssh <master> crictl restart $(crictl ps --label io.kubernetes.container.name=etcd -q)
-ssh <master> crictl restart $(crictl ps --label io.kubernetes.container.name=kube-apiserver -q)
-```
-
----
-
-## 5. API Server Issues
-
-### 5.1 API Server Unresponsive
-
-**Symptom:** `kubectl` commands timeout or fail
-
-**Diagnostic Commands:**
-```bash
-# Check API server pod
-kubectl get pods -n kube-system -l component=kube-apiserver
-
-# Check API server logs
-kubectl logs -n kube-system kube-apiserver-<master> --tail=100
-
-# Check on host
-ssh <master> crictl logs $(crictl ps --label io.kubernetes.container.name=kube-apiserver -q) --tail=100
-
-# Check connectivity
-curl -k https://<master-ip>:6443/healthz
-curl -k https://<master-ip>:6443/livez
-curl -k https://<master-ip>:6443/readyz
-```
-
-**Resolution:**
-```bash
-# Restart API server
-ssh <master> crictl restart $(crictl ps --label io.kubernetes.container.name=kube-apiserver -q)
-
-# Check for certificate issues
-ssh <master> openssl x509 -in /etc/kubernetes/pki/apiserver.crt -noout -dates
-
-# Check etcd connectivity from API server
-# Check --etcd-servers flag in /etc/kubernetes/manifests/kube-apiserver.yaml
-
-# Check for too many objects causing OOM
-kubectl get all --all-namespaces | wc -l
-```
-
----
-
-### 5.2 API Server Certificate Expiry
-
-**Diagnostic Commands:**
-```bash
-kubeadm certs check-expiration
-openssl x509 -in /etc/kubernetes/pki/apiserver-kubelet-client.crt -noout -dates
-```
-
-**Resolution:**
-```bash
-# Renew all certificates
-kubeadm certs renew all
-
-# Restart control plane components
-ssh <master> mv /etc/kubernetes/manifests/kube-apiserver.yaml /tmp/
-sleep 10
-ssh <master> mv /tmp/kube-apiserver.yaml /etc/kubernetes/manifests/
-
-# Distribute new kubeconfig if needed
-kubeadm init phase kubeconfig all
-```
-
----
-
-## 6. Controller Manager & Scheduler Issues
-
-### 6.1 Controller Manager Not Running
-
-**Symptom:** Deployments not reconciling, nodes not monitored, PVCs not provisioned
-
-**Diagnostic Commands:**
-```bash
-kubectl get pods -n kube-system -l component=kube-controller-manager
-kubectl logs -n kube-system kube-controller-manager-<master> --tail=100
-
-# Check leader election
-kubectl get endpoints kube-controller-manager -n kube-system -o yaml
-```
-
-**Resolution:**
-```bash
-# Restart controller manager
-ssh <master> crictl restart $(crictl ps --label io.kubernetes.container.name=kube-controller-manager -q)
-
-# Check for certificate issues
-ssh <master> openssl x509 -in /etc/kubernetes/pki/controller-manager.crt -noout -dates
-```
-
----
-
-### 6.2 Scheduler Not Scheduling
-
-**Symptom:** New pods remain `Pending` indefinitely
-
-**Diagnostic Commands:**
-```bash
-kubectl get pods -n kube-system -l component=kube-scheduler
-kubectl logs -n kube-system kube-scheduler-<master> --tail=100
-
-# Check leader election
-kubectl get endpoints kube-scheduler -n kube-system -o yaml
-```
-
-**Resolution:**
-```bash
-# Restart scheduler
-ssh <master> crictl restart $(crictl ps --label io.kubernetes.container.name=kube-scheduler -q)
-```
-
----
-
-## 7. KubeSpray-Specific Issues
-
-### 7.1 Deployment Failures
-
-**Symptom:** `cluster.yml` playbook fails
-
-**Diagnostic Commands:**
-```bash
-# Run with verbose output
-ansible-playbook -i inventory/mycluster/hosts.yaml cluster.yml -vvvv
-
-# Check specific task failure
-ansible-playbook -i inventory/mycluster/hosts.yaml cluster.yml --tags all --step
-
-# Validate inventory
-ansible -i inventory/mycluster/hosts.yaml all -m ping
-```
-
-**Common Issues & Fixes:**
-```bash
-# SSH key issues
-ssh-copy-id root@<node>
-
-# Python not found on target nodes
-ansible -i inventory/mycluster/hosts.yaml all -m raw -a "apt-get install -y python3"
-
-# Variable conflicts - check group_vars
-grep -r "kube_version" inventory/mycluster/group_vars/
-
-# Reset and retry
-ansible-playbook -i inventory/mycluster/hosts.yaml reset.yml
-ansible-playbook -i inventory/mycluster/hosts.yaml cluster.yml
-```
-
----
-
-### 7.2 Inventory Errors
-
-**Symptom:** Wrong nodes targeted, variables not applied
-
-**Diagnostic Commands:**
-```bash
-# Validate inventory structure
-ansible-inventory -i inventory/mycluster/hosts.yaml --list --yaml
-
-# Check variable precedence
-ansible -i inventory/mycluster/hosts.yaml <node> -m debug -a "var=hostvars[inventory_hostname]"
-```
-
----
-
-## 8. Air-Gap Specific Issues
-
-### 8.1 Image Pull Failures in Air-Gap
-
-**Symptom:** All pods fail with `ImagePullBackOff` after deployment
-
-**Diagnostic Commands:**
-```bash
-# Verify image_list is complete
-cat /tmp/kubespray_image_list.txt | wc -l
-
-# Check Harbor has all required images
-curl -u admin:password "https://harbor.internal/api/v2.0/projects/library/repositories" | jq '.[] | .name'
-
-# Check image pull secret in all namespaces
-kubectl get secrets --all-namespaces | grep regcred
-```
-
-**Resolution:**
-```bash
-# Re-run image mirroring
-ansible-playbook -i inventory/mycluster/hosts.yaml -e "download_run_once=false" download.yml
-
-# Or manually mirror missing images
-for image in $(cat required_images.txt); do
-  docker pull $image
-  docker tag $image harbor.internal/library/$(echo $image | cut -d'/' -f2-)
-  docker push harbor.internal/library/$(echo $image | cut -d'/' -f2-)
-done
-```
-
----
-
-### 8.2 Registry Authentication in Air-Gap
-
-**Resolution:**
-```bash
-# Create pull secret in every namespace that needs it
-for ns in $(kubectl get ns -o jsonpath='{.items[*].metadata.name}'); do
-  kubectl create secret docker-registry harbor-regcred \
-    --docker-server=harbor.internal \
-    --docker-username=admin \
-    --docker-password='<password>' \
-    -n $ns --dry-run=client -o yaml | kubectl apply -f -
-done
-```
-
----
-
-## 9. Log Locations Reference
-
-| Component | Log Location |
-|-----------|-------------|
-| kubelet | `journalctl -u kubelet` |
-| kube-apiserver | `/var/log/kubernetes/kube-apiserver.log` or `kubectl logs` |
-| kube-scheduler | `/var/log/kubernetes/kube-scheduler.log` or `kubectl logs` |
-| kube-controller-manager | `/var/log/kubernetes/kube-controller-manager.log` or `kubectl logs` |
-| etcd | `crictl logs <etcd-container>` or `/var/log/etcd/` |
-| containerd | `journalctl -u containerd` |
-| Calico | `/var/log/calico/` or `kubectl logs -n kube-system -l k8s-app=calico-node` |
-| CoreDNS | `kubectl logs -n kube-system -l k8s-app=kube-dns` |
-| Pod logs | `kubectl logs <pod> -n <namespace>` |
-| Node system logs | `journalctl -xe` on the node |
-| KubeSpray logs | `ansible-playbook ... -vvvv` output |
-
----
-
-## 10. Quick Recovery Procedures
-
-### Full Control Plane Recovery
-```bash
-# 1. Backup etcd first (if possible)
-etcdctl snapshot save /backup/etcd-$(date +%Y%m%d).db
-
-# 2. Check all control plane pods
-kubectl get pods -n kube-system
-
-# 3. Restart all static pods on master
-ssh <master> crictl pods --namespace kube-system
-ssh <master> crictl restart <pod-id>
-
-# 4. If masters are unreachable, restore from KubeSpray backup
-ansible-playbook -i inventory/mycluster/hosts.yaml cluster.yml
-```
-
-### Worker Node Recovery
-```bash
-# 1. Drain
-kubectl drain <node> --ignore-daemonsets --delete-emptydir-data
-
-# 2. SSH and fix
-ssh <node>
-systemctl restart kubelet
-systemctl restart containerd
-
-# 3. If needed, reset and rejoin
-kubeadm reset
-kubeadm join <master>:6443 --token <token> --discovery-token-ca-cert-hash <hash>
-
-# 4. Uncordon
-kubectl uncordon <node>
-```
+**Resolution:\n    pods, restart\n-    pod network policy\n- Create service if missing\n- Use fully qualified name (namespace.svc.cluster.local)\n\n### Symptom: Cannot Reach Service via ClusterIP\n**Possible Causes:**\n- Service not created correctly\n- Endpoints not populated\n- Network policy blocking traffic\n- kube-proxy not functioning\n- IPVS/iptables rules not programmed\n\n**Diagnostic Commands:**\n```bash\n# Check service exists\nkubectl get svc <service-name> -n <namespace>\n\n# Check endpoints\nkubectl get ep <service-name> -n <namespace>\n\n# Check kube-proxy mode\nps -ef | grep kube-proxy\n\n# Check iptables rules (if using iptables mode)\niptables -L -t nat | grep KUBE-SVC-\n\n# Check IPVS (if using IPVS mode)\nip vsadm -L -n\n\n# Test from within cluster\nkubectl run -it --rm --image=alpine:3.18 net-test -- wget -O- http://<service>.<namespace>.svc.cluster.local:<port>\n```\n\n**Resolution:**\n- Create service with correct selector\n- Ensure pods matching selector are Ready and Running\n- Adjust network policies to allow traffic\n- Restart kube-proxy if needed\n- Reconcile iptables/IPVS rules\n\n### Symptom: High Latency or Packet Loss Between Pods\n**Possible Causes:**\n- CNI misconfiguration\n- Node NIC issues\n- Overloaded node\n- MTU mismatch\n- Packet filtering/drops\n\n**Diagnostic Commands:**\n```bash\n# Check node-to-node latency\nping <node-ip>\n\n# Check MTU\nip link show\n\n# Check for dropped packets\nnetstat -s | grep -i \"packet loss\"\n\n# Check CNI status\ncalicoctl node status\ncalicoctl node diags\n\n# Capture traffic\ntcpdump -i eth0 port <port> -w capture.pcap\n\n# Check node load\nuptime\nmpstat\n```\n\n**Resolution:**\n- Fix CNI configuration (reinstall if needed)\n- Replace faulty NIC or cable\n- Reduce pod density on overloaded node\n- Ensure consistent MTU across all nodes\n- Adjust firewall/ebpf rules\n\n## 4. etcd Issues\n\n### Symptom: etcd Cluster Unhealthy\n**Possible Causes:**\n- Lost quorum (less than majority of MONs)\n- High latency between etcd members\n- Disk I/O too slow\n- Certificate expired\n- Member corrupted\n\n**Diagnostic Commands:**\n```bash\n# Check etcd health\nETCDCTL_API=3 etcdctl --endpoints=https://[MASTER_IP]:2379 \\\n  --cacert=/etc/kubernetes/pki/etcd/ca.crt \\\n  --cert=/etc/kubernetes/pki/etcd/server.crt \\\n  --key=/etc/kubernetes/pki/etcd/server.key \\\n  endpoint health --cluster\n\n# Check member status\nETCDCTL_API=3 etcdctl --endpoints=https://[MASTER_IP]:2379 \\\n  --cacert=/etc/kubernetes/pki/etcd/ca.crt \\\n  --cert=/etc/kubernetes/pki/etcd/server.crt \\\n  --key=/etc/kubernetes/pki/etcd/server.key \\\n  member list\n\n# Check disk I/O\niostat -x 1 5\n\n# Check network latency between etcd members\nping <etcd-member-ip>\n\n# Check certificate dates\nopenssl x509 -in /etc/kubernetes/pki/etcd/server.crt -text -noout | grep NotAfter\n```\n\n**Resolution:**\n- Restore quorum by fixing/replacing failed members\n- Improve network between members\n- Move etcd to faster storage (NVMe)\n- Renew expired certificates\n- Restore from backup if corruption\n\n### Symptom: High etcd Request Latency\n**Possible Causes:**\n- Slow disk I/O\n- Network issues\n- Too many watchers\n- Large etcd database\n- CPU starvation\n\n**Diagnostic Commands:**\n```bash\n# Check etcd metrics\nETCDCTL_API=3 etcdctl --endpoints=https://[MASTER_IP]:2379 \\\n  --cacert=/etc/kubernetes/pki/etcd/ca.crt \\\n  --cert=/etc/kubernetes/pki/etcd/server.crt \\\n  --key=/etc/kubernetes/pki/etcd/server.key \\\n  endpoint status --write-out=table\n\n# Check database size\ndu -sh /var/lib/etcd/member\n\n# Check watchers\nETCDCTL_API=3 etcdctl --endpoints=https://[MASTER_IP]:2379 \\\n  --cacert=/etc/kubernetes/pki/etcd/ca.crt \\\n  --cert=/etc/kubernetes/pki/etcd/server.crt \\\n  --key=/etc/kubernetes/pki/etcd/server.key \\\n  alarm list\n\n# Check CPU usage\nmpstat -P ALL 1\n```\n\n**Resolution:**\n- Move etcd to NVMe storage\n- Tune garbage collection\n- Reduce number of watches (use informers properly)\n- Compact etcd history\n- Ensure adequate CPU resources\n\n## 5. API Server Issues\n\n### Symptom: API Server Unresponsive\n**Possible Causes:**\n- Certificate expired\n- etcd connection issues\n- Resource exhaustion (CPU/Memory)\n- Admission webhook hanging\n- Audit log filling disk\n\n**Diagnostic Commands:**\n```bash\n# Check API server pods\nkubectl get pods -n kube-system -l component=kube-apiserver\n\n# Check logs\nkubectl logs -n kube-system -l component=kube-apiserver\n\n# Check etcd connectivity from API server\nexec into apiserver pod and etcdctl endpoint health\n\n# Check resource usage\ntop -b -n 1 | grep kube-apiserver\n\n# Check audit log size\nls -lh /var/log/kubernetes/audit.log\n\n# Check webhook configurations\nkubectl get validatingwebhookconfiguration\nkubectl get mutatingwebhookconfiguration\n```\n\n**Resolution:**\n- Renew certificates if expired\n- Fix etcd connectivity\n- Increase API server resources\n- Fix or remove problematic admission webhooks\n- Rotate or expand audit log\n\n### Symptom: API Server Returns 503 Service Unavailable\n**Possible Causes:**\n- All API server pods unready\n- Load balancer misconfiguration\n- etcd unavailable\n- certificate mismatch\n\n**Diagnostic Commands:**\n```bash\n# Check API server pod readiness\nkubectl get pods -n kube-system -l component=kube-apiserver\n\n# Check load balancer (HAProxy) stats\n# http://<lb-ip>:<stats-port>/stats\n\n# Check etcd from apiserver pod\nkubectl exec -n kube-system -it <apiserver-pod> -- etcdctl endpoint health\n\n# Check server certificate\nkubectl exec -n kube-system -it <apiserver-pod> -- \\\n  openssl x509 -in /etc/kubernetes/pki/apiserver.crt -text -noout\n```\n\n**Resolution:**\n- Ensure at least one API server pod is Ready\n- Fix HAProxy configuration\n- Restore etcd health\n- Replace mismatched certificates\n\n## 6. Controller Manager / Scheduler Issues\n\n### Symptom: Controller Manager Not Leader\n**Possible Causes:**\n- Leader election lock not available\n- Resource exhaustion\n- Network partition to etcd\n- Configuration error\n\n**Diagnostic Commands:**\n```bash\n# Check controller manager status\nkubectl get pods -n kube-system -l component=kube-controller-manager\n\n# Check logs\nkubectl logs -n kube-system -l component=kube-controller-manager\n\n# Check leader election status\nkubectl get endpoints -n kube-system kube-controller-manager -o yaml\n\n# Check etcd connectivity\nkubectl exec -n kube-system -it <cm-pod> -- etcdctl endpoint health\n```\n\n**Resolution:**\n- Fix etcd connectivity\n- Increase resources if needed\n- Check for multiple controller managers running (should be 1)\n- Restore leader election configmap/lease\n\n### Symptom: Scheduler Not Placing Pods\n**Possible Causes:**\n- Scheduler not running\n- Predicates failing (node not fit)\n- Resource fragmentation\n- Taints/tolerations mismatch\n\n**Diagnostic Commands:**\n```bash\n# Check scheduler pods\nkubectl get pods -n kube-system -l component=kube-scheduler\n\n# Check logs\nkubectl logs -n kube-system -l component=kube-scheduler\n\n# Check predicate failures for a pod\nkubectl describe pod <pod-name> | grep -A10 -B5 \"predicate\"\n\n# Check node conditions\nkubectl get nodes -o jsonpath='{.items[*].status.conditions}'\n```\n\n**Resolution:**\n- Fix scheduler if crashed\n- Resolve predicate failures (usually resources or taints)\n- Defragment nodes by rescheduling pods\n- Fix taints/tolerations\n\n## 7. KubeSpray-Specific Issues\n\n### Symptom: Inventory Parsing Error\n**Possible Causes:**\n- YAML syntax error\n- Duplicate host definitions\n- Invalid IP address\n- Missing required variables\n\n**Diagnostic Commands:**\n```bash\n# Validate inventory\nansible-inventory -i inventory/my-cluster/hosts.yml --list\n\n# Check YAML syntax\npython3 -c \"import yaml; yaml.safe_load(open('inventory/my-cluster/hosts.yml'))\"\n\n# Look for duplicates\ngrep -n \"ansible_host\" inventory/my-cluster/hosts.yml | sort | uniq -d\n```\n\n**Resolution:**\n- Fix YAML syntax\n- Remove duplicate host entries\n- Correct IP addresses\n- Add missing variables\n\n### Symptom: Playbook Fails on Specific Node\n**Possible Causes:**\n- SSH connectivity issue\n- Missing prerequisites on node\n- Permission issue\n- Time drift\n\n**Diagnostic Commands:**\n```bash\n# Test SSH connectivity\nansible <node> -i inventory/my-cluster/hosts.yml -m ping\n\n# Check prerequisites\nansible <node> -i inventory/my-cluster/hosts.yml -m shell -a \"lsb_release -a\"\n\n# Check time sync\nansible <node> -i inventory/my-cluster/hosts.yml -m shell -a \"chronyc tracking\"\n\n# Run with verbose output\nansible-playbook -i inventory/my-cluster/hosts.yml playbook.yml -vvv\n```\n\n**Resolution:**\n- Fix SSH connectivity (check keys, ports, firewalls)\n- Install missing prerequisites\n- Adjust permissions\n- Synchronize time via NTP\n\n### Symptom: Air-Gap Image Pull Failure\n**Possible Causes:**\n- Image not in Harbor/Nexus\n- Authentication to registry failed\n- TLS certificate not trusted\n- Network blocked to registry\n\n**Diagnostic Commands:**\n```bash\n# Check image exists in registry\ncurl -sk -u \"user:pass\" https://harbor.internal/api/v2.0/projects/<proj>/repositories/<repo>/artifacts\n\n# Try to login to registry\n docker login harbor.internal\n\n# Check TLS certificates\nopenssl s_client -connect harbor.internal:443 -servername harbor.internal\n\n# Check network connectivity\nnc -zv harbor.internal 443\n\n# Check containerd config\ncat /etc/containerd/config.toml | grep -A5 -B5 \"harbor\"\n```\n\n**Resolution:**\n- Push missing image to Harbor\n- Fix registry credentials in secret\n- Add internal CA to trusted certificates\n- Fix network rules\n- Fix network connectivity\n- Ensure containerd mirror config correct\n\n## 8. General Diagnostic Tools\n\n### Essential Commands for All Issues\n```bash\n# Cluster overview\nkubectl get nodes\nkubectl get pods -A\n\n# Node details\nkubectl describe node <node-name>\n\n# Pod details\nkubectl describe pod <pod-name> -n <namespace>\n\n# Events (sorted by time)\nkubectl get events --sort-by='.metadata.timestamp'\n\n# Logs\nkubectl logs <pod-name> -n <namespace> [-c container] [-p --previous]\n\n# Execute into pod\nkubectl exec -it <pod-name> -n <namespace> -- /bin/sh\n\n# Port forward for debugging\nkubectl port-forward <pod-name> <local-port>:<remote-port> -n <namespace>\n\n# Network troubleshooting\nkubectl run -it --rm --image=alpine:3.18 net-debug -- \\\n  apk add --no-cache curl tcpdump netcat-openrsd bind-tools iptables\n\n# System logs\njournalctl -u kubelet -f\njournalctl -u containerd -f\njournalctl -u ssh -f\n```\n\n### Log Locations\n```bash\n# Kubernetes components\n/var/log/kubernetes/\n\n# Containerd\n/var/log/messages\n/var/log/syslog\n\n# System services\n/ctl/\n\n# Calico\n/var/log/calico/node.log\n/var/log/calico/felix.log\n\n# HAProxy\n/var/log/haproxy.log\n\n# Keepalived\n/var/log/keepalived.log\n\n# Ceph\n/var/log/ceph/*.log\n```\n\n## Recovery Procedures\n\n### etcd Disaster Recovery\n1. Stop all etcd members\n2. Restore from snapshot:\n   ```\n   ETCDCTL_API=3 etcdctl --data-dir /var/lib/etcd-from-snapshot \\\n     snapshot restore /var/backups/etcd-snapshot.db\n   ```\n3. Update etcd member URLs in restored config if IPs changed\n4. Start etcd members one by one\n5. Update Kubernetes API server endpoints if needed\n\n### Control Plane Reconstruction\nIf all masters lost:\n1. Provision new VMs with same IPs/hostnames\n2. Run OS preparation\n3. Install containerd\n4. Copy etcd data from backup\n5. Initialize first master with `--experimental-control-plane`\n6. Join additional masters\n7. Rejoin workers\n\n### etcd Snapshot Automation\nAdd to cron:\n```\n0 2 * * * root ETCDCTL_API=3 etcdctl --endpoints=https://10.1.1.1:2379 \\\n  --cacert=/etc/kubernetes/pki/etcd/ca.crt \\\n  --cert=/etc/kubernetes/pki/etcd/server.crt \\\n  --key=/etc/kubernetes/pki/etcd/server.key \\\n  snapshot save /var/etcd-backup/etcd-$(date +\\%F\\%T).db\n```\n\n## Preventive Measures\n\n1. **Monitoring**: Deploy Prometheus/Grafana with alerts for:\n   - Node NotReady\n   - etcd quorum loss\n   - High API server latency\n   - Certificate expiration (<7 days)\n   - Kubelet restart loops\n\n2. **Backups**:\n   - Daily etcd snapshots\n   - Monthly VM/etcd volume snapshots\n   - Git backup of all configs (Ansible, Helm values, manifests)\n\n3. **Testing**:\n   - Quarterly disaster recovery drills\n   - Monthly upgrade testing in staging\n   - Chaos engineering (simulate node/network failures)\n\n4. **Documentation**:\n   - Keep runbook updated\n   - Document all manual interventions\n   - Maintain version matrix of all components\n\n## Emergency Contacts\n\n- **On-call Engineer**: [Pager Duty/OpsGenie details]\n- **Storage Team**: [Ceph/Storage specialists]\n- **Network Team**: [Network/Security team]\n- **Platform Team**: [K8s/Rancher/ArgoCD specialists]\n- **Vendor Support**: [If applicable]\n\n## Quick Reference: Common Fix Commands\n\n```bash\n# Restart kubelet\nsystemctl restart kubelet\n\n# Restart containerd\nsystemctl restart containerd\n\n# Renew kubeadm certificates\nkubeadm certs renew all\n\n# Reset etcd OK)\nkubeadm reset\n\n# cordon and drain node\nkubectl cordon <node>\nkubectl drain <node> --ignore-daemonsets --delete-emptydir-data\n\n# uncordon node\nkubectl uncordon <node>\n\n# Check pod restarts in last hour\nkubectl get pods -A --field-selector=status.phase=Running \\\n  -o jsonpath='{range .items[*]}{.metadata.name}{\"\\t\"}{.status.containerStatuses[*].restartCount}{\"\\n\"}{end}' \\\n  | sort -k2 -nr | head -10\n\n# Watch node status\nwatch -n 5 \"kubectl get nodes\"\n\n# Watch pod status in namespace\nwatch -n 5 \"kubectl get pods -n <namespace>\"\n\n# Tail all pods in namespace\nstern -n <namespace> .\n```\n\n## When to Escalate\n\nEscalate to senior/storage/network team if:\n- Multiple etcd members failed simultaneously\n- Storage cluster showing data loss symptoms\n- Network partition affecting >50% of cluster\n- Certificate authority compromised\n- Security breach suspected\n- Application data corruption detected\n\n---\n*Last Updated: $(date)*\n*Version: 1.0*\n*Environment: Air-gapped Kubernetes with KubeSpray*\n
