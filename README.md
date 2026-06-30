@@ -1,157 +1,49 @@
-# Cloud-Native Deployment Documentation
+# Cloud-Native Deployment
 
-> Enterprise cloud-native deployment guides for Kubernetes, Ceph, and platform components
-
----
-
-## 📖 About This Repository
-
-This repository contains comprehensive deployment guides, troubleshooting
-references, upgrade procedures, and operational runbooks for an enterprise
-cloud-native infrastructure stack. It covers the full lifecycle from bare
-metal/VM provisioning through production operations.
-
-### Infrastructure Stack
-
-| Component | Purpose |
-|-----------|---------|
-| **Kubernetes** | Container orchestration (deployed via KubeSpray) |
-| **Ceph** | Distributed storage (block, object, filesystem) |
-| **Calico** | CNI networking with BGP and network policies |
-| **Rancher** | Multi-cluster management platform |
-| **ArgoCD** | GitOps continuous delivery |
-| **Gatekeeper / Kyverno** | Policy enforcement |
-| **Prometheus / Grafana** | Monitoring and alerting |
-| **Loki** | Log aggregation |
-| **Velero** | Backup and disaster recovery |
-| **GitLab** | Source control and CI/CD |
-| **Nexus / Harbor** | Package and container registry |
-| **MetalLB / NGINX Ingress** | Load balancing and ingress |
-| **cert-manager** | Automated TLS certificate management |
-
-### Deployment Architecture
-
-All deployments are designed for **air-gapped environments** with no direct
-internet access. A reverse proxy (NGINX) abstracts all internal services
-(Nexus, Harbor, GitLab) behind a single static address, so servers never
-need to know actual backend IPs.
-
-```
-Management Server (Ansible)
-        │
-        ├── Reverse Proxy (NGINX) ─── Single entry point
-        │       ├── nexus.internal  → Nexus Repository
-        │       ├── harbor.internal → Harbor Registry
-        │       └── gitlab.internal → GitLab
-        │
-        ├── Kubernetes Cluster
-        │       ├── Control Plane (3 masters)
-        │       └── Worker Nodes (N)
-        │
-        ├── Ceph Cluster
-        │       ├── MON (3)
-        │       ├── OSD (N)
-        │       └── MDS (2, for CephFS)
-        │
-        └── Monitoring Stack
-                ├── Prometheus
-                ├── Grafana
-                └── Loki
-```
+> Complete deployment guides, technology wiki, and interactive wizard for enterprise cloud-native infrastructure
 
 ---
 
-## 🖥️ Deployment Targets
+## 🚀 New Here? Start With the Wizard
 
-### Virtual Machines (Primary)
+The **Deployment Wizard** is an interactive step-by-step guide that asks you
+a few questions and generates personalized deployment commands. No prior
+Kubernetes experience required.
 
-The primary deployment targets are virtual machines running on hypervisors
-such as VMware vSphere, Proxmox VE, KVM/libvirt, or Hyper-V. VMs provide:
+**[→ Open the Deployment Wizard](https://davoudteimouri.github.io/cloud-native-deployment/wiki/wizard.html)**
 
-- **Flexibility**: Easy snapshot, clone, and resource adjustment
-- **Density**: Multiple nodes per physical host
-- **Automation**: Full API-driven provisioning via Terraform/Ansible
-- **Isolation**: Hypervisor-level separation between workloads
+It will help you choose:
+- Deployment target (VM or bare metal)
+- Cluster size (K3s or full Kubernetes)
+- Internet or air-gap
+- GUI tools or CLI only
+- Storage backend (Ceph or MinIO)
+- Components (monitoring, GitOps, backup, registry, policy, logging, mesh)
+- Post-deployment hardening
 
-All guides assume VM-based deployment unless otherwise noted.
-
-### Physical Servers (Bare Metal)
-
-For workloads requiring direct hardware access (GPU, NVMe, high memory) or
-when virtualization overhead is unacceptable, the same stack deploys on
-physical servers with these additional considerations:
-
-| Topic | VM | Physical Server |
-|-------|----|-----------------|
-| **Provisioning** | Cloud-init / Terraform | PXE boot (iPXE + Kickstart/Preseed) |
-| **Storage** | Virtual disks on shared storage | Direct-attached NVMe/SSD (use Ceph for shared) |
-| **Network** | Virtual switches | Physical NICs, bonding, VLANs |
-| **GPU** | PCI passthrough | Native GPU (device-plugin for K8s) |
-| **Boot** | Virtual BIOS/UEFI | UEFI Secure Boot (requires additional config) |
-| **Firmware** | N/A | Update BIOS/BMC before deployment |
-| **IPMI/BMC** | N/A | Configure for remote management |
-| **RAID** | Handled by hypervisor | Hardware or software RAID (mdadm) |
-
-#### Physical Server Additional Steps
-
-```bash
-# 1. PXE boot configuration (on management server)
-sudo apt-get install -y dnsmasq tftpd-hpa
-# Configure /etc/dnsmasq.d/pxe.conf for network boot
-
-# 2. Kickstart/Preseed for automated OS install
-# Place preseed file on HTTP server for unattended install
-
-# 3. IPMI configuration for remote management
-ipmitool -H <bmc-ip> -U admin -P pass power on
-ipmitool -H <bmc-ip> -U admin -P bootdev pxe
-
-# 4. RAID configuration (if not using Ceph)
-sudo mdadm --create /dev/md0 --level=10 --raid-devices=4 /dev/sd[abcd]
-
-# 5. Firmware updates
-# Use vendor tools ( Dell iDRAC, HPE iLO, Lenovo XClarity)
-
-# 6. Physical network bonding
-cat > /etc/netplan/01-bond.yaml <<EOF
-network:
-  version: 2
-  ethernets:
-    enp1s0: {}
-    enp2s0: {}
-  bonds:
-    bond0:
-      addresses: [10.0.0.20/24]
-      interfaces: [enp1s0, enp2s0]
-      parameters:
-        mode: 802.3ad
-        transmit-hash-policy: layer3+4
-EOF
-sudo netplan apply
-```
-
-#### Physical Server K8s Considerations
-
-- **etcd on dedicated disk**: Physical servers often have multiple disks — use a separate SSD for etcd
-- **GPU node labels**: `kubectl label node <gpu-node> gpu=true`
-- **Node taints**: Taint physical GPU nodes so only GPU workloads schedule there
-- **Power management**: Configure STONITH/fencing if using Pacemaker
-- **BMC monitoring**: Use IPMI exporter for hardware metrics in Prometheus
+At the end, it generates a complete set of commands tailored to your choices.
 
 ---
 
-## 🌐 Web Resources
+## 📚 Technology Wiki
 
-| Resource | Description | URL |
-|----------|-------------|-----|
-| **Wiki** | Technology learning & training | [GitHub Pages](https://davoudteimouri.github.io/cloud-native-deployment/wiki/) |
-| **Deployment Wizard** | Interactive step-by-step guide | [GitHub Pages](https://davoudteimouri.github.io/cloud-native-deployment/wiki/wizard.html) |
+The **Wiki** explains every technology used in this deployment — what it does,
+how it works, and why we chose it. Perfect for learning and training.
+
+**[→ Open the Technology Wiki](https://davoudteimouri.github.io/cloud-native-deployment/wiki/)**
+
+Topics covered:
+- Kubernetes, Ceph, Calico, Prometheus/Grafana, Loki, Velero
+- Rancher, ArgoCD, cert-manager, Kyverno/Gatekeeper
+- GitLab, Nexus, Harbor, MetalLB, NGINX Ingress
+- Ansible, Vault, containerd, Reverse Proxy architecture
+- Alternatives (K3s, Podman, LXC/LXD, Cilium, MinIO, Flux, etc.)
 
 ---
 
-## 📋 Documentation Index
+## 📋 Documentation
 
-### 🏗️ Architecture & Design
+### Architecture & Design
 | Document | Description |
 |----------|-------------|
 | [Architecture Overview](docs/architecture/overview.md) | High-level architecture and design decisions |
@@ -162,7 +54,7 @@ sudo netplan apply
 | [Multi-Cluster Architecture](docs/advanced/multi-cluster-architecture.md) | Multi-cluster concepts, patterns, and management |
 | [Multi-DC Architecture](docs/advanced/multi-site/multi-dc-architecture.md) | Multi-datacenter deployment |
 
-### 📦 Deployment Guides
+### Deployment Guides
 | Document | Description |
 |----------|-------------|
 | [OS Preparation](docs/os-preparation/os-prep-guide.md) | Time, firewall, services, updates |
@@ -187,9 +79,7 @@ sudo netplan apply
 | [Rancher](docs/platform/rancher.md) | Rancher management platform |
 | [ArgoCD](docs/platform/argocd.md) | ArgoCD GitOps |
 | [Gatekeeper](docs/platform/gatekeeper.md) | OPA Gatekeeper policies |
-| [Gatekeeper Appendix](docs/platform/gatekeeper-appendix.md) | Additional Gatekeeper examples |
 | [cert-manager](docs/platform/cert-manager.md) | Certificate management |
-| [cert-manager Part 2](docs/platform/cert-manager-part2.md) | Advanced cert-manager |
 | [Prometheus/Grafana](docs/monitoring/prometheus-grafana.md) | Monitoring stack |
 | [Logging](docs/monitoring/logging.md) | Centralized logging |
 | [Log Collector](docs/monitoring/log-collector.md) | Log collection with Promtail |
@@ -198,7 +88,54 @@ sudo netplan apply
 | [Network Requirements](docs/prerequisites/network-requirements.md) | Network requirements |
 | [Cluster Sizing](docs/scaling/cluster-sizing.md) | Cluster sizing guide |
 
-### 🔧 Ansible Playbooks
+### Troubleshooting
+| Document | Description |
+|----------|-------------|
+| [Kubernetes Troubleshooting](docs/troubleshooting/kubernetes.md) | Node, Pod, etcd, API server issues |
+| [Ceph Troubleshooting](docs/troubleshooting/ceph.md) | Ceph health, PG, OSD, MON issues |
+| [Networking Troubleshooting](docs/troubleshooting/networking.md) | Calico, MetalLB, Ingress, DNS issues |
+| [Platform Troubleshooting](docs/troubleshooting/platform.md) | Rancher, ArgoCD, Gatekeeper, cert-manager |
+| [Monitoring Troubleshooting](docs/troubleshooting/monitoring.md) | Prometheus, Grafana, Loki, Velero |
+
+### Upgrade Guides
+| Document | Description |
+|----------|-------------|
+| [Comprehensive Upgrade](docs/upgrade/comprehensive.md) | All components + OS upgrade procedures |
+| [Kubernetes Upgrade](docs/upgrade/kubernetes.md) | K8s upgrade + OS upgrade details |
+| [Ceph Upgrade](docs/upgrade/ceph.md) | Ceph rolling upgrade details |
+| [Component Upgrade](docs/upgrade/components.md) | Helm upgrades for all components |
+
+### Cheat Sheets
+| Document | Description |
+|----------|-------------|
+| [Kubernetes Cheat Sheet](docs/cheat-sheets/kubernetes.md) | K8s quick reference |
+| [Ceph Cheat Sheet](docs/cheat-sheets/ceph.md) | Ceph quick reference |
+| [KubeSpray Cheat Sheet](docs/cheat-sheets/kubespray.md) | KubeSpray quick reference |
+| [Monitoring Cheat Sheet](docs/cheat-sheets/monitoring.md) | Monitoring quick reference |
+
+### Operations
+| Document | Description |
+|----------|-------------|
+| [Health Check](docs/operations/health-check.md) | All-component health checks |
+| [Hardening](docs/operations/hardening.md) | Post-deployment security hardening |
+| [Kubernetes Addons](docs/operations/kubernetes-addons.md) | Kyverno, Falco, Trivy, Vault, service mesh |
+| [Service Mesh](docs/operations/service-mesh.md) | Istio, Linkerd, Cilium — when to use, which one |
+| [Container Services](docs/operations/container-services.md) | Services as containers with custom ports |
+| [Repository/Registry Manager](docs/operations/repository-registry-manager.md) | Nexus/Harbor with reverse proxy |
+
+### OS Preparation
+| Document | Description |
+|----------|-------------|
+| [OS Prep Guide](docs/os-preparation/os-prep-guide.md) | Time, firewall, services, updates |
+| [Linux Hardening](docs/os-preparation/linux-hardening.md) | CIS benchmark hardening |
+| [NTP & DNS](docs/os-preparation/ntp-dns.md) | Time sync and DNS |
+| [Management Server](docs/os-preparation/management-server.md) | Ansible control node |
+| [Windows Setup](docs/os-preparation/windows-setup.md) | Windows node preparation |
+
+---
+
+## 🔧 Ansible Playbooks
+
 | Playbook | Description |
 |----------|-------------|
 | [OS Preparation](ansible/playbooks/os-preparation.yml) | K8s node OS preparation |
@@ -207,7 +144,8 @@ sudo netplan apply
 | [Monitoring Deploy](ansible/playbooks/monitoring-deploy.yml) | Monitoring stack deployment |
 | [Platform Deploy](ansible/playbooks/platform-deploy.yml) | Platform components deployment |
 
-### 📜 Scripts
+## 📜 Scripts
+
 | Script | Description |
 |--------|-------------|
 | [Linux Hardening](scripts/os-prep/linux-hardening.sh) | Node hardening shell script |
@@ -219,7 +157,8 @@ sudo netplan apply
 | [Logging Deploy](scripts/monitoring/deploy-logging.sh) | Logging deployment |
 | [Velero Deploy](scripts/velero/deploy-velero.sh) | Velero deployment |
 
-### 📊 Helm Values
+## 📊 Helm Values
+
 | File | Description |
 |------|-------------|
 | [ArgoCD Values](helm-values/argocd-values.yaml) | ArgoCD Helm values |
@@ -227,72 +166,68 @@ sudo netplan apply
 | [NGINX Ingress Values](helm-values/nginx-ingress-values.yaml) | NGINX Ingress values |
 | [MetalLB Values](helm-values/metallb-values.yaml) | MetalLB Helm values |
 
-### 🔍 Troubleshooting
-| Document | Description |
-|----------|-------------|
-| [Kubernetes Troubleshooting](docs/troubleshooting/kubernetes.md) | Node, Pod, etcd, API server issues |
-| [Ceph Troubleshooting](docs/troubleshooting/ceph.md) | Ceph health, PG, OSD, MON issues |
-| [Networking Troubleshooting](docs/troubleshooting/networking.md) | Calico, MetalLB, Ingress, DNS issues |
-| [Platform Troubleshooting](docs/troubleshooting/platform.md) | Rancher, ArgoCD, Gatekeeper, cert-manager |
-| [Monitoring Troubleshooting](docs/troubleshooting/monitoring.md) | Prometheus, Grafana, Loki, Velero |
+---
 
-### ⬆️ Upgrade Guides
-| Document | Description |
-|----------|-------------|
-| [Kubernetes Upgrade](docs/upgrade/kubernetes.md) | K8s upgrade + OS upgrade |
-| [Ceph Upgrade](docs/upgrade/ceph.md) | Ceph rolling upgrade |
-| [Component Upgrade](docs/upgrade/components.md) | Helm upgrades for all components |
+## 🏗️ Infrastructure Stack
 
-### 📝 Cheat Sheets
-| Document | Description |
-|----------|-------------|
-| [Kubernetes Cheat Sheet](docs/cheat-sheets/kubernetes.md) | K8s quick reference |
-| [Ceph Cheat Sheet](docs/cheat-sheets/ceph.md) | Ceph quick reference |
-| [KubeSpray Cheat Sheet](docs/cheat-sheets/kubespray.md) | KubeSpray quick reference |
-| [Monitoring Cheat Sheet](docs/cheat-sheets/monitoring.md) | Monitoring quick reference |
+| Component | Purpose |
+|-----------|---------|
+| **Kubernetes** | Container orchestration (deployed via KubeSpray) |
+| **Ceph** | Distributed storage (block, object, filesystem) |
+| **Calico** | CNI networking with BGP and network policies |
+| **Rancher** | Multi-cluster management platform |
+| **ArgoCD** | GitOps continuous delivery |
+| **Gatekeeper / Kyverno** | Policy enforcement |
+| **Prometheus / Grafana** | Monitoring and alerting |
+| **Loki** | Log aggregation |
+| **Velero** | Backup and disaster recovery |
+| **GitLab** | Source control and CI/CD |
+| **Nexus / Harbor** | Package and container registry |
+| **MetalLB / NGINX Ingress** | Load balancing and ingress |
+| **cert-manager** | Automated TLS certificate management |
 
-### ⚙️ Operations
-| Document | Description |
-|----------|-------------|
-| [Health Check](docs/operations/health-check.md) | All-component health checks |
-| [Kubernetes Addons](docs/operations/kubernetes-addons.md) | Kyverno, Falco, Trivy, Vault, service mesh comparison |
-| [Service Mesh Discussion](docs/operations/service-mesh.md) | Istio, Linkerd, Cilium — when to use, which one |
-| [Container Services](docs/operations/container-services.md) | Services as containers with custom ports |
-| [Repository/Registry Manager](docs/operations/repository-registry-manager.md) | Nexus/Harbor with reverse proxy |
+### Deployment Architecture
 
-### 🖥️ OS Preparation
-| Document | Description |
-|----------|-------------|
-| [OS Prep Guide](docs/os-preparation/os-prep-guide.md) | Time, firewall, services, updates |
-| [Linux Hardening](docs/os-preparation/linux-hardening.md) | CIS benchmark hardening |
-| [NTP & DNS](docs/os-preparation/ntp-dns.md) | Time sync and DNS |
-| [Management Server](docs/os-preparation/management-server.md) | Ansible control node |
-| [Windows Setup](docs/os-preparation/windows-setup.md) | Windows node preparation |
+All deployments are designed for **air-gapped environments** with no direct
+internet access. A reverse proxy (NGINX) abstracts all internal services
+behind a single static address. Clients use canonical public URLs
+(`archive.ubuntu.com`, `docker.io`, etc.) — the proxy handles routing
+transparently via DNS.
+
+```
+Management Server (Ansible)
+        │
+        ├── Reverse Proxy (NGINX) ─── Single entry point
+        │       ├── archive.ubuntu.com  → Nexus (packages)
+        │       ├── registry-1.docker.io → Harbor (images)
+        │       └── quay.io, registry.k8s.io → Harbor/Nexus
+        │
+        ├── Kubernetes Cluster
+        │       ├── Control Plane (3 masters)
+        │       └── Worker Nodes (N)
+        │
+        ├── Ceph Cluster
+        │       ├── MON (3)  OSD (N)  MDS (2)  RGW (2)
+        │
+        └── Monitoring Stack
+                ├── Prometheus  ├── Grafana  └── Loki
+```
 
 ---
 
-## 🚀 Quick Start
+## 🖥️ Deployment Targets
 
-```bash
-# 1. Clone this repository
-git clone https://github.com/DavoudTeimouri/cloud-native-deployment.git
-cd cloud-native-deployment
+### Virtual Machines (Primary)
 
-# 2. Prepare the management server
-ansible-playbook ansible/playbooks/mgmt-server-prep.yml
+The primary deployment targets are virtual machines running on hypervisors
+such as VMware vSphere, Proxmox VE, KVM/libvirt, or Hyper-V.
 
-# 3. Prepare K8s nodes
-ansible-playbook -i ansible/inventory/mgmt-cluster/hosts.yml ansible/playbooks/os-preparation.yml
+### Physical Servers (Bare Metal)
 
-# 4. Deploy Kubernetes via KubeSpray
-ansible-playbook -i ansible/inventory/mgmt-cluster/hosts.yml ansible/playbooks/kubespray-deploy.yml
-
-# 5. Deploy platform components
-ansible-playbook -i ansible/inventory/mgmt-cluster/hosts.yml ansible/playbooks/platform-deploy.yml
-
-# 6. Deploy monitoring
-ansible-playbook -i ansible/inventory/mgmt-cluster/hosts.yml ansible/playbooks/monitoring-deploy.yml
-```
+For workloads requiring direct hardware access (GPU, NVMe, high memory) or
+when virtualization overhead is unacceptable, the same stack deploys on
+physical servers. Additional steps include PXE boot, IPMI configuration,
+network bonding, and RAID setup.
 
 ---
 
@@ -304,3 +239,5 @@ ansible-playbook -i ansible/inventory/mgmt-cluster/hosts.yml ansible/playbooks/m
   Adjust versions in your inventory as needed.
 - **Customization**: All Ansible variables, Helm values, and configurations
   are designed to be overridden for your specific environment.
+- **DNS**: All public repository domains resolve to the reverse proxy IP.
+  No client-side configuration changes are needed.
