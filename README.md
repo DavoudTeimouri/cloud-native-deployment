@@ -31,8 +31,6 @@ At the end, it generates:
 
 ## 📚 Technology Wiki
 
-## 📚 Technology Wiki
-
 The **Wiki** explains every technology used in this deployment — what it does,
 how it works, and why we chose it. Perfect for learning and training.
 
@@ -129,6 +127,14 @@ Topics covered:
 | [Container Services](docs/operations/container-services.md) | Services as containers with custom ports |
 | [Repository/Registry Manager](docs/operations/repository-registry-manager.md) | Nexus/Harbor with reverse proxy |
 
+### Monitoring
+| Document | Description |
+|----------|-------------|
+| [Metrics Implementation](docs/monitoring/metrics.md) | Simple + advanced monitoring with Prometheus/Grafana/Loki |
+| [Prometheus/Grafana](docs/monitoring/prometheus-grafana.md) | Monitoring stack deployment |
+| [Logging](docs/monitoring/logging.md) | Centralized logging |
+| [Log Collector](docs/monitoring/log-collector.md) | Log collection with Promtail |
+
 ### OS Preparation
 | Document | Description |
 |----------|-------------|
@@ -136,6 +142,8 @@ Topics covered:
 | [Linux Hardening](docs/os-preparation/linux-hardening.md) | CIS benchmark hardening |
 | [NTP & DNS](docs/os-preparation/ntp-dns.md) | Time sync and DNS |
 | [Management Server](docs/os-preparation/management-server.md) | Ansible control node |
+| [VM Customization](docs/os-preparation/vm-customization.md) | Hypervisor-specific VM configs |
+| [Physical Server](docs/os-preparation/physical-customization.md) | Vendor-specific bare-metal configs |
 | [Windows Setup](docs/os-preparation/windows-setup.md) | Windows node preparation |
 
 ---
