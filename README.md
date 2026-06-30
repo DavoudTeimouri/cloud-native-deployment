@@ -12,8 +12,9 @@ Kubernetes experience required.
 
 **[→ Open the Deployment Wizard](https://davoudteimouri.github.io/cloud-native-deployment/wiki/wizard.html)**
 
-It will help you choose:
+The wizard will help you choose:
 - Deployment target (VM or bare metal)
+- Hypervisor (Proxmox, VMware, KVM, Hyper-V) or server vendor (Dell, HPE, Lenovo)
 - Cluster size (K3s or full Kubernetes)
 - Internet or air-gap
 - GUI tools or CLI only
@@ -21,9 +22,14 @@ It will help you choose:
 - Components (monitoring, GitOps, backup, registry, policy, logging, mesh)
 - Post-deployment hardening
 
-At the end, it generates a complete set of commands tailored to your choices.
+At the end, it generates:
+- **Ansible playbooks** for automated deployment
+- **Shell scripts** for OS preparation and health checks
+- **Custom commands** with your IPs, hostnames, and variables pre-filled
 
 ---
+
+## 📚 Technology Wiki
 
 ## 📚 Technology Wiki
 
