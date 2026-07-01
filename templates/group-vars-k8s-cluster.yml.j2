@@ -1,0 +1,128 @@
+# Kubernetes Cluster Configuration - Customized by Wizard
+# Generated from template with user-provided values
+
+kube_version: "{{ lookup('env', 'KUBERNETES_VERSION') | default('v1.31.4', true) }}"
+cluster_name: "{{ cluster_name }}"
+
+container_manager: containerd
+kube_network_plugin: calico
+
+# Calico Configuration
+calico_iptables_backend: "Auto"
+calico_ipip_mode: "Always"
+calico_vxlan_mode: "Never"
+calico_ip_autodetection_method: "interface=eth0"
+calico_node_liveness_check_enabled: true
+
+# Network Configuration - Customized by User
+kube_pods_subnet: "{{ pod_cidr }}"
+kube_service_addresses: "{{ service_cidr }}"
+kube_network_node_prefix: 24
+
+# Load Balancer (External HAProxy) - Customized by User
+loadbalancer_apiserver:
+  address: "{{ lb_ips[0] }}"  # First LB as primary VIP
+  port: 6443
+
+# etcd Configuration
+etcd_deployment_type: host
+etcd_data_dir: /var/lib/etcd
+
+# API Server Admission Plugins
+kube_apiserver_enable_admission_plugins:
+  - NodeRestriction
+  - PodSecurity
+  - ResourceQuota
+  - ServiceAccount
+  - DefaultStorageClass
+  - DefaultTolerationSeconds
+  - MutatingAdmissionWebhook
+  - ValidatingAdmissionWebhook
+  - Priority
+  - NamespaceLifecycle
+  - LimitRanger
+
+# Audit Logging
+kubernetes_audit: true
+audit_log_path: "/var/log/kubernetes/audit.log"
+audit_log_maxage: 30
+audit_log_maxbackups: 10
+audit_log_maxsize: 200
+
+# Encryption at Rest
+kube_encrypt_secret_data: true
+
+# Air-Gap Configuration - Customized by User
+registry_host: "{{ harbor_url | split(':')[0] }}"
+registry_port: "{{ harbor_url | split(':')[1] | default('443', true) }}"
+registry_protocol: "https"
+
+kube_image_repo: "{{ harbor_url }}/k8s"
+etcd_image_repo: "{{ harbor_url }}/k8s/etcd"
+calico_image_repo: "{{ harbor_url }}/calico"
+coredns_image_repo: "{{ harbor_url }}/k8s/coredns"
+dnsautoscaler_image_repo: "{{ harbor_url }}/k8s/cluster-proportional-autoscaler"
+metrics_server_image_repo: "{{ harbor_url }}/k8s/metrics-server"
+nginx_image_repo: "{{ harbor_url }}/k8s/nginx"
+
+containerd_registries:
+  "{{ harbor_url }}":
+    endpoints:
+      - "https://{{ harbor_url }}"
+
+containerd_insecure_registries:
+  - "{{ harbor_url }}"
+
+download_run_once: false
+download_localhost: false
+
+# Security
+kube_security_context: true
+
+# Node Labels - Customized by User
+node_labels:
+{% for i in range(worker_count) %}
+    worker-{{ loop.index }}:
+      node-role.kubernetes.io/worker: "true"
+{% endfor %}
+
+# Certificates
+kube_cert_group: kube-cert-api
+auto_renew_certificates: true
+
+# Additional sysctl
+additional_sysctl:
+  - { name: 'net.core.somaxconn', value: '65535' }
+  - { name: 'net.ipv4.tcp_max_syn_backlog', value: '65535' }
+  - { name: 'vm.max_map_count', value: '262144' }
+
+# Kubelet Configuration
+kubelet_config_extra_args:
+  maxPods: 110
+  eventRecordQPS: 50
+  eventBurst: 100
+  kubeAPIQPS: 50
+  kubeAPIBurst: 100
+  serializeImagePulls: false
+
+# Kube-proxy
+kube_proxy_mode: iptables
+
+# DNS Configuration - Customized by User
+enable_nodelocaldns: true
+nodelocaldns_ip: 169.254.25.10
+
+# Metrics Server
+metrics_server_enabled: true
+
+# Upstream DNS - Customized by User
+upstream_dns_servers:
+{% for dns in dns_servers.split() %}
+  - {{ dns }}
+{% endfor %}
+
+# Search Domains - Customized by User
+searchdomains:
+{% for domain in search_domains.split() %}
+  - {{ domain }}
+{% endfor %}

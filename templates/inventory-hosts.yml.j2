@@ -1,0 +1,89 @@
+# Default inventory template - will be customized by wizard
+all:
+  hosts:
+    # Master Nodes (ETCD & Control Plane)
+{% for i in range(master_count) %}
+    master-{{ loop.index }}:
+      ansible_host: {{ master_ips[i] }}
+      ip: {{ master_ips[i] }}
+      access_ip: {{ master_ips[i] }}
+{% endfor %}
+    
+    # Worker Nodes
+{% for i in range(worker_count) %}
+    worker-{{ loop.index }}:
+      ansible_host: {{ worker_ips[i] }}
+      ip: {{ worker_ips[i] }}
+      access_ip: {{ worker_ips[i] }}
+{% endfor %}
+    
+    # Load Balancers (HAProxy + keepalived)
+{% for i in range(lb_count) %}
+    lb-{{ loop.index }}:
+      ansible_host: {{ lb_ips[i] }}
+      ip: {{ lb_ips[i] }}
+      access_ip: {{ lb_ips[i] }}
+{% endfor %}
+    
+    # Ceph Monitor Nodes
+{% for i in range(mon_count) %}
+    ceph-mon-{{ loop.index }}:
+      ansible_host: {{ mon_ips[i] }}
+      ip: {{ mon_ips[i] }}
+      access_ip: {{ mon_ips[i] }}
+{% endfor %}
+    
+    # Ceph OSD Nodes
+{% for i in range(osd_count) %}
+    ceph-osd-{{ loop.index }}:
+      ansible_host: {{ osd_ips[i] }}
+      ip: {{ osd_ips[i] }}
+      access_ip: {{ osd_ips[i] }}
+{% endfor %}
+    
+    # Ops Servers
+    ops-linux:
+      ansible_host: {{ ops_linux_ip }}
+      ip: {{ ops_linux_ip }}
+      access_ip: {{ ops_linux_ip }}
+    ops-windows:
+      ansible_host: {{ ops_windows_ip }}
+      ip: {{ ops_windows_ip }}
+      access_ip: {{ ops_windows_ip }}
+
+  children:
+    kube_control_plane:
+      hosts:
+{% for i in range(master_count) %}
+        master-{{ loop.index }}:
+{% endfor %}
+    
+    etcd:
+      hosts:
+{% for i in range(master_count) %}
+        etcd-{{ loop.index }}:
+{% endfor %}
+    
+    kube_node:
+      hosts:
+{% for i in range(worker_count) %}
+        worker-{{ loop.index }}:
+{% endfor %}
+    
+    balancer:
+      hosts:
+{% for i in range(lb_count) %}
+        lb-{{ loop.index }}:
+{% endfor %}
+    
+    ceph_mon:
+      hosts:
+{% for i in range(mon_count) %}
+        ceph-mon-{{ loop.index }}:
+{% endfor %}
+    
+    ceph_osd:
+      hosts:
+{% for i in range(osd_count) %}
+        ceph-osd-{{ loop.index }}:
+{% endfor %}
