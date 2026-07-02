@@ -1,0 +1,738 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cloud-Native Deployment Wizard</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; background-color: #f4f4f4; color: #333; }
+        .container { max-width: 900px; margin: auto; background: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        h1, h2 { color: #0056b3; }
+        .section { margin-bottom: 30px; padding: 15px; border: 1px solid #ddd; border-radius: 5px; background-color: #f9f9f9; }
+        .form-group { margin-bottom: 15px; }
+        label { display: block; margin-bottom: 5px; font-weight: bold; }
+        input[type="text"], input[type="number"], input[type="password"] {
+            width: calc(100% - 22px);
+            padding: 10px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            font-size: 16px;
+        }
+        .ip-input-group { display: flex; align-items: center; margin-bottom: 5px; }
+        .ip-input-group input { margin-right: 10px; }
+        .add-ip-btn, .remove-ip-btn {
+            background-color: #28a745;
+            color: white;
+            border: none;
+            padding: 8px 12px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            margin-left: 5px;
+        }
+        .remove-ip-btn { background-color: #dc3545; }
+        button[type="submit"] {
+            background-color: #007bff;
+            color: white;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 18px;
+            margin-top: 20px;
+        }
+        button[type="submit"]:hover { background-color: #0056b3; }
+        .output-section { margin-top: 30px; background-color: #e9ecef; padding: 15px; border-radius: 5px; }
+        textarea { width: 100%; height: 400px; border: 1px solid #ccc; border-radius: 4px; padding: 10px; font-family: monospace; font-size: 14px; }
+        .download-btn {
+            background-color: #218838;
+            color: white;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+            margin-top: 10px;
+        }
+        .download-btn:hover { background-color: #1e7e34; }
+        .error-message { color: red; font-weight: bold; margin-top: 5px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Cloud-Native Deployment Wizard</h1>
+        <p>This interactive wizard helps you configure the IP addresses and other critical parameters for your air-gapped Kubernetes cluster deployment. Fill in the details below, and it will generate a customized configuration file for you to download.</p>
+
+        <form id="configWizardForm">
+            <div class="section">
+                <h2>Cluster Identification</h2>
+                <div class="form-group">
+                    <label for="clusterName">Cluster Name:</label>
+                    <input type="text" id="clusterName" value="mgmt-cluster" required>
+                </div>
+                <div class="form-group">
+                    <label for="domainSuffix">Domain Suffix (e.g., internal):</label>
+                    <input type="text" id="domainSuffix" value="internal" required>
+                </div>
+            </div>
+
+            <div class="section">
+                <h2>Node IPs Configuration</h2>
+                <div class="form-group">
+                    <label for="masterNodesCount">Number of Master Nodes (1-7):</label>
+                    <input type="number" id="masterNodesCount" value="3" min="1" max="7" required>
+                </div>
+                <div class="form-group">
+                    <label>Master Node IPs:</label>
+                    <div id="masterIpsContainer">
+                        <!-- IP inputs will be dynamically added here -->
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label for="workerNodesCount">Number of Worker Nodes (1-50):</label>
+                    <input type="number" id="workerNodesCount" value="3" min="1" max="50" required>
+                </div>
+                <div class="form-group">
+                    <label>Worker Node IPs:</label>
+                    <div id="workerIpsContainer">
+                        <!-- IP inputs will be dynamically added here -->
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label for="lbNodesCount">Number of External Load Balancer Nodes (HAProxy + Keepalived) (1-4):</label>
+                    <input type="number" id="lbNodesCount" value="2" min="1" max="4" required>
+                </div>
+                <div class="form-group">
+                    <label>Load Balancer IPs:</label>
+                    <div id="lbIpsContainer">
+                        <!-- IP inputs will be dynamically added here -->
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label for="haproxyVIP">HAProxy VIP (Keepalived Virtual IP):</label>
+                    <input type="text" id="haproxyVIP" value="10.1.0.100" required>
+                    <div class="error-message" id="haproxyVIPError"></div>
+                </div>
+            </div>
+
+            <div class="section">
+                <h2>Ceph Storage Configuration</h2>
+                <div class="form-group">
+                    <label for="cephMonCount">Number of Ceph Monitor Nodes (1-7):</label>
+                    <input type="number" id="cephMonCount" value="3" min="1" max="7" required>
+                </div>
+                <div class="form-group">
+                    <label>Ceph Monitor IPs:</label>
+                    <div id="cephMonIpsContainer"></div>
+                </div>
+
+                <div class="form-group">
+                    <label for="cephOsdCount">Number of Ceph OSD Nodes (1-20):</label>
+                    <input type="number" id="cephOsdCount" value="3" min="1" max="20" required>
+                </div>
+                <div class="form-group">
+                    <label>Ceph OSD IPs:</label>
+                    <div id="cephOsdIpsContainer"></div>
+                </div>
+
+                <div class="form-group">
+                    <label for="cephPublicCidr">Ceph Public Network CIDR:</label>
+                    <input type="text" id="cephPublicCidr" value="10.1.0.0/16" required>
+                    <div class="error-message" id="cephPublicCidrError"></div>
+                </div>
+                <div class="form-group">
+                    <label for="cephClusterCidr">Ceph Cluster Network CIDR:</label>
+                    <input type="text" id="cephClusterCidr" value="10.1.0.0/16" required>
+                    <div class="error-message" id="cephClusterCidrError"></div>
+                </div>
+                <div class="form-group">
+                    <label for="cephFsid">Ceph FSID (leave blank for auto-generate):</label>
+                    <input type="text" id="cephFsid">
+                </div>
+            </div>
+
+            <div class="section">
+                <h2>Operations Servers</h2>
+                <div class="form-group">
+                    <label for="linuxOpsIp">Linux Ops Server IP:</label>
+                    <input type="text" id="linuxOpsIp" value="10.1.0.50" required>
+                    <div class="error-message" id="linuxOpsIpError"></div>
+                </div>
+                <div class="form-group">
+                    <label for="windowsOpsIp">Windows Ops Server IP:</label>
+                    <input type="text" id="windowsOpsIp" value="10.1.0.51" required>
+                    <div class="error-message" id="windowsOpsIpError"></div>
+                </div>
+            </div>
+
+            <div class="section">
+                <h2>Registry Configuration</h2>
+                <div class="form-group">
+                    <label for="nexusHostIp">Nexus Host IP:</label>
+                    <input type="text" id="nexusHostIp" value="10.1.0.20" required>
+                    <div class="error-message" id="nexusHostIpError"></div>
+                </div>
+                <div class="form-group">
+                    <label for="nexusHttpPort">Nexus HTTP Port:</label>
+                    <input type="number" id="nexusHttpPort" value="8081" min="1" max="65535" required>
+                </div>
+                <div class="form-group">
+                    <label for="harborHostIp">Harbor Host IP:</label>
+                    <input type="text" id="harborHostIp" value="10.1.0.30" required>
+                    <div class="error-message" id="harborHostIpError"></div>
+                </div>
+                <div class="form-group">
+                    <label for="pipIndex">Default Python Index URL (derived from Nexus):</label>
+                    <input type="text" id="pipIndex" readonly>
+                </div>
+            </div>
+
+            <div class="section">
+                <h2>Network Configuration</h2>
+                <div class="form-group">
+                    <label for="k8sServiceCidr">Kubernetes Service CIDR:</label>
+                    <input type="text" id="k8sServiceCidr" value="10.96.0.0/12" required>
+                    <div class="error-message" id="k8sServiceCidrError"></div>
+                </div>
+                <div class="form-group">
+                    <label for="k8sPodCidr">Kubernetes Pod CIDR:</label>
+                    <input type="text" id="k8sPodCidr" value="10.244.0.0/16" required>
+                    <div class="error-message" id="k8sPodCidrError"></div>
+                </div>
+                <div class="form-group">
+                    <label for="metallbEnabled">Enable MetalLB (Application cluster only)?</label>
+                    <input type="checkbox" id="metallbEnabled" checked>
+                </div>
+                <div class="form-group">
+                    <label for="metallbStartIp">MetalLB IP Pool Start (App cluster only):</label>
+                    <input type="text" id="metallbStartIp" value="10.2.0.200">
+                    <div class="error-message" id="metallbStartIpError"></div>
+                </div>
+                <div class="form-group">
+                    <label for="metallbEndIp">MetalLB IP Pool End (App cluster only):</label>
+                    <input type="text" id="metallbEndIp" value="10.2.0.250">
+                    <div class="error-message" id="metallbEndIpError"></div>
+                </div>
+            </div>
+
+            <div class="section">
+                <h2>Ingress External IPs</h2>
+                <div class="form-group">
+                    <label for="ingressExtCount">Number of Ingress External IPs (1-4):</label>
+                    <input type="number" id="ingressExtCount" value="2" min="1" max="4" required>
+                </div>
+                <div class="form-group">
+                    <label>Ingress External IPs:</label>
+                    <div id="ingressExtIpsContainer"></div>
+                </div>
+            </div>
+
+            <div class="section">
+                <h2>Monitoring Configuration</h2>
+                <div class="form-group">
+                    <label for="prometheusExtCount">Number of Prometheus External IPs (1-4):</label>
+                    <input type="number" id="prometheusExtCount" value="2" min="1" max="4" required>
+                </div>
+                <div class="form-group">
+                    <label>Prometheus External IPs:</label>
+                    <div id="prometheusExtIpsContainer"></div>
+                </div>
+                <div class="form-group">
+                    <label for="grafanaIp">Grafana/Loki External IP (for alerts):</label>
+                    <input type="text" id="grafanaIp" value="10.2.0.32" required>
+                    <div class="error-message" id="grafanaIpError"></div>
+                </div>
+            </div>
+
+            <div class="section">
+                <h2>Storage Class Names</h2>
+                <div class="form-group">
+                    <label for="cephfsSc">CephFS Storage Class Name:</label>
+                    <input type="text" id="cephfsSc" value="cephfs" required>
+                </div>
+                <div class="form-group">
+                    <label for="rbdSc">RBD Storage Class Name:</label>
+                    <input type="text" id="rbdSc" value="rbd" required>
+                </div>
+            </div>
+
+            <div class="section">
+                <h2>MinIO (Alternative Object Storage)</h2>
+                <div class="form-group">
+                    <label for="minioEnabled">Enable MinIO (alternative to Ceph RGW)?</label>
+                    <input type="checkbox" id="minioEnabled">
+                </div>
+                <div id="minioConfig" style="display:none;">
+                    <div class="form-group">
+                        <label for="minioApiHostIp">MinIO API Host IP:</label>
+                        <input type="text" id="minioApiHostIp" value="10.1.0.40">
+                        <div class="error-message" id="minioApiHostIpError"></div>
+                    </div>
+                    <div class="form-group">
+                        <label for="minioConsoleHostIp">MinIO Console Host IP:</label>
+                        <input type="text" id="minioConsoleHostIp" value="10.1.0.41">
+                        <div class="error-message" id="minioConsoleHostIpError"></div>
+                    </div>
+                    <div class="form-group">
+                        <label for="minioRootUser">MinIO Root User:</label>
+                        <input type="text" id="minioRootUser" value="minioadmin">
+                    </div>
+                    <div class="form-group">
+                        <label for="minioRootPassword">MinIO Root Password:</label>
+                        <input type="password" id="minioRootPassword" value="minioadmin123">
+                    </div>
+                    <div class="form-group">
+                        <label for="minioReplicationEnabled">Enable MinIO Replication (multi-site)?</label>
+                        <input type="checkbox" id="minioReplicationEnabled">
+                    </div>
+                </div>
+            </div>
+
+            <div class="section">
+                <h2>DNS/NTP Servers</h2>
+                <div class="form-group">
+                    <label for="dnsServerCount">Number of Internal DNS Servers (1-4):</label>
+                    <input type="number" id="dnsServerCount" value="2" min="1" max="4" required>
+                </div>
+                <div class="form-group">
+                    <label>DNS Server IPs (e.g., 10.1.0.1 10.1.0.2):</label>
+                    <div id="dnsServerIpsContainer"></div>
+                </div>
+                <div class="form-group">
+                    <label for="ntpServers">NTP Servers (space-separated, e.g., 1.pool.ntp.org 2.pool.ntp.org):</label>
+                    <input type="text" id="ntpServers" value="1.pool.ntp.org 2.pool.ntp.org" required>
+                </div>
+            </div>
+
+            <div class="section">
+                <h2>GitLab Configuration</h2>
+                <div class="form-group">
+                    <label for="gitlabEnabled">Deploy GitLab?</label>
+                    <input type="checkbox" id="gitlabEnabled" checked>
+                </div>
+                <div id="gitlabConfig" style="display:block;">
+                    <div class="form-group">
+                        <label for="gitlabPostgresqlHostIp">GitLab PostgreSQL Host IP:</label>
+                        <input type="text" id="gitlabPostgresqlHostIp" value="10.1.0.60">
+                        <div class="error-message" id="gitlabPostgresqlHostIpError"></div>
+                    </div>
+                    <div class="form-group">
+                        <label for="gitlabPostgresqlPassword">GitLab PostgreSQL Password:</label>
+                        <input type="password" id="gitlabPostgresqlPassword" value="GitLabDB123">
+                    </div>
+                    <div class="form-group">
+                        <label for="gitlabRedisHostIp">GitLab Redis Host IP:</label>
+                        <input type="text" id="gitlabRedisHostIp" value="10.1.0.61">
+                        <div class="error-message" id="gitlabRedisHostIpError"></div>
+                    </div>
+                    <div class="form-group">
+                        <label for="gitlabRedisPassword">GitLab Redis Password:</label>
+                        <input type="password" id="gitlabRedisPassword" value="GitLabRedis123">
+                    </div>
+                    <div class="form-group">
+                        <label for="gitlabRunnerToken">GitLab Runner Token:</label>
+                        <input type="password" id="gitlabRunnerToken" value="runner-token-change-me">
+                    </div>
+                </div>
+            </div>
+
+            <div class="section">
+                <h2>Secrets & Passwords</h2>
+                <div class="form-group">
+                    <label for="nexusAdminPassword">Nexus Admin Password:</label>
+                    <input type="password" id="nexusAdminPassword" value="admin123" required>
+                </div>
+                <div class="form-group">
+                    <label for="harborAdminPassword">Harbor Admin Password:</label>
+                    <input type="password" id="harborAdminPassword" value="Harbor12345" required>
+                </div>
+                <div class="form-group">
+                    <label for="harborDbPassword">Harbor Database Password:</label>
+                    <input type="password" id="harborDbPassword" value="HarborDB123" required>
+                </div>
+                <div class="form-group">
+                    <label for="harborRedisPassword">Harbor Redis Password:</label>
+                    <input type="password" id="harborRedisPassword" value="HarborRedis123" required>
+                </div>
+                <div class="form-group">
+                    <label for="grafanaAdminPassword">Grafana Admin Password:</label>
+                    <input type="password" id="grafanaAdminPassword" value="GrafanaAdmin123" required>
+                </div>
+                <div class="form-group">
+                    <label for="smtpPassword">SMTP Password (for Alertmanager):</label>
+                    <input type="password" id="smtpPassword" value="smtp-password" required>
+                </div>
+                <div class="form-group">
+                    <label for="lokiS3AccessKey">Loki S3 Access Key:</label>
+                    <input type="password" id="lokiS3AccessKey" value="loki-access" required>
+                </div>
+                <div class="form-group">
+                    <label for="lokiS3SecretKey">Loki S3 Secret Key:</label>
+                    <input type="password" id="lokiS3SecretKey" value="loki-secret-change-me" required>
+                </div>
+                <div class="form-group">
+                    <label for="veleroS3AccessKey">Velero S3 Access Key:</label>
+                    <input type="password" id="veleroS3AccessKey" value="velero-access" required>
+                </div>
+                <div class="form-group">
+                    <label for="veleroS3SecretKey">Velero S3 Secret Key:</label>
+                    <input type="password" id="veleroS3SecretKey" value="velero-secret-change-me" required>
+                </div>
+                <div class="form-group">
+                    <label for="rancherBootstrapPassword">Rancher Bootstrap Password:</label>
+                    <input type="password" id="rancherBootstrapPassword" value="RancherAdmin123" required>
+                </div>
+                <div class="form-group">
+                    <label for="argocdAdminPassword">ArgoCD Admin Password:</label>
+                    <input type="password" id="argocdAdminPassword" value="ArgoCDAdmin123" required>
+                </div>
+                <div class="form-group">
+                    <label for="haproxyStatsPassword">HAProxy Stats Password:</label>
+                    <input type="password" id="haproxyStatsPassword" value="HaproxyStats123" required>
+                </div>
+                <div class="form-group">
+                    <label for="keepalivedAuthPassword">Keepalived Auth Password:</label>
+                    <input type="password" id="keepalivedAuthPassword" value="KeepalivedAuth123" required>
+                </div>
+            </div>
+
+            <div class="section">
+                <h2>Calico & Versions</h2>
+                <div class="form-group">
+                    <label for="calicoIpipMode">Calico IPIP Mode (Always/Never):</label>
+                    <input type="text" id="calicoIpipMode" value="Always" required>
+                </div>
+                <div class="form-group">
+                    <label for="calicoVxlanMode">Calico VXLAN Mode (Always/Never):</label>
+                    <input type="text" id="calicoVxlanMode" value="Never" required>
+                </div>
+                <div class="form-group">
+                    <label for="calicoBgpEnabled">Enable Calico BGP?</label>
+                    <input type="checkbox" id="calicoBgpEnabled">
+                </div>
+
+                <h3>Component Versions (leave blank for latest recommended)</h3>
+                <div class="form-group">
+                    <label for="k8sVersion">Kubernetes Version:</label>
+                    <input type="text" id="k8sVersion" value="v1.31.4">
+                </div>
+                <div class="form-group">
+                    <label for="cephVersion">Ceph Version:</label>
+                    <input type="text" id="cephVersion" value="quincy">
+                </div>
+                <div class="form-group">
+                    <label for="kubesprayVersion">KubeSpray Version:</label>
+                    <input type="text" id="kubesprayVersion" value="v2.25.0">
+                </div>
+                <div class="form-group">
+                    <label for="nexusVersion">Nexus Version:</label>
+                    <input type="text" id="nexusVersion" value="3.68.1">
+                </div>
+                <div class="form-group">
+                    <label for="harborVersion">Harbor Version:</label>
+                    <input type="text" id="harborVersion" value="2.10.0">
+                </div>
+                <div class="form-group">
+                    <label for="gitlabVersion">GitLab Version:</label>
+                    <input type="text" id="gitlabVersion" value="16.11.0">
+                </div>
+            </div>
+
+            <button type="submit">Generate Configuration</button>
+        </form>
+
+        <div class="output-section" style="display:none;">
+            <h2>Generated Configuration (YAML)</h2>
+            <textarea id="generatedConfig" readonly></textarea>
+            <button class="download-btn" id="downloadConfig">Download config.yml</button>
+        </div>
+    </div>
+
+    <script>
+        function validateIp(ip) {
+            const pattern = /^(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$/;
+            return pattern.test(ip);
+        }
+
+        function validateCidr(cidr) {
+            const pattern = /^(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\/(?:[0-9]|[1-2][0-9]|3[0-2])$/;
+            return pattern.test(cidr);
+        }
+
+        function setupDynamicIpFields(countId, containerId, defaultBaseIp, labelPrefix, validator = validateIp) {
+            const countInput = document.getElementById(countId);
+            const container = document.getElementById(containerId);
+
+            const addIpField = (index, value = '') => {
+                const ipGroup = document.createElement('div');
+                ipGroup.className = 'ip-input-group';
+                ipGroup.innerHTML = `
+                    <input type="text" placeholder="${labelPrefix} ${index + 1} IP" value="${value}" required>
+                    <div class="error-message"></div>
+                `;
+                const ipInput = ipGroup.querySelector('input');
+                const errorMessage = ipGroup.querySelector('.error-message');
+
+                ipInput.addEventListener('input', () => {
+                    if (validator(ipInput.value)) {
+                        errorMessage.textContent = '';
+                    } else {
+                        errorMessage.textContent = 'Invalid IP address or CIDR format.';
+                    }
+                });
+                container.appendChild(ipGroup);
+            };
+
+            const updateIpFields = () => {
+                const currentCount = container.children.length;
+                const newCount = parseInt(countInput.value, 10);
+
+                if (isNaN(newCount) || newCount < parseInt(countInput.min) || newCount > parseInt(countInput.max)) {
+                    // Invalid count, do not modify fields
+                    return;
+                }
+
+                if (newCount > currentCount) {
+                    for (let i = currentCount; i < newCount; i++) {
+                        const baseOctets = defaultBaseIp.split('.');
+                        const lastOctet = parseInt(baseOctets[3], 10) + i;
+                        const newIp = `${baseOctets[0]}.${baseOctets[1]}.${baseOctets[2]}.${lastOctet}`;
+                        addIpField(i, newIp);
+                    }
+                } else if (newCount < currentCount) {
+                    for (let i = currentCount - 1; i >= newCount; i--) {
+                        container.removeChild(container.children[i]);
+                    }
+                }
+            };
+
+            countInput.addEventListener('input', updateIpFields);
+            updateIpFields(); // Initialize fields
+        }
+
+        function getIpValues(containerId) {
+            const container = document.getElementById(containerId);
+            const ips = [];
+            for (const child of container.children) {
+                const input = child.querySelector('input');
+                if (input && input.value) {
+                    ips.push(input.value);
+                }
+            }
+            return ips;
+        }
+
+        // Live update for derived fields
+        document.getElementById('nexusHostIp').addEventListener('input', updateDerivedFields);
+        document.getElementById('nexusHttpPort').addEventListener('input', updateDerivedFields);
+        document.getElementById('metallbEnabled').addEventListener('change', updateDerivedFields);
+        document.getElementById('minioEnabled').addEventListener('change', updateDerivedFields);
+        document.getElementById('gitlabEnabled').addEventListener('change', updateDerivedFields);
+
+        function updateDerivedFields() {
+            const nexusHostIp = document.getElementById('nexusHostIp').value;
+            const nexusHttpPort = document.getElementById('nexusHttpPort').value;
+            document.getElementById('pipIndex').value = `http://${nexusHostIp}:${nexusHttpPort}/repository/pypi-group/simple`;
+
+            // Toggle MetalLB IP fields
+            const metallbEnabled = document.getElementById('metallbEnabled').checked;
+            document.getElementById('metallbStartIp').disabled = !metallbEnabled;
+            document.getElementById('metallbEndIp').disabled = !metallbEnabled;
+
+            // Toggle MinIO config section
+            const minioEnabled = document.getElementById('minioEnabled').checked;
+            document.getElementById('minioConfig').style.display = minioEnabled ? 'block' : 'none';
+            document.getElementById('minioApiHostIp').required = minioEnabled;
+            document.getElementById('minioConsoleHostIp').required = minioEnabled;
+            document.getElementById('minioRootUser').required = minioEnabled;
+            document.getElementById('minioRootPassword').required = minioEnabled;
+
+            // Toggle GitLab config section
+            const gitlabEnabled = document.getElementById('gitlabEnabled').checked;
+            document.getElementById('gitlabConfig').style.display = gitlabEnabled ? 'block' : 'none';
+            document.getElementById('gitlabPostgresqlHostIp').required = gitlabEnabled;
+            document.getElementById('gitlabPostgresqlPassword').required = gitlabEnabled;
+            document.getElementById('gitlabRedisHostIp').required = gitlabEnabled;
+            document.getElementById('gitlabRedisPassword').required = gitlabEnabled;
+            document.getElementById('gitlabRunnerToken').required = gitlabEnabled;
+        }
+
+        document.getElementById('configWizardForm').addEventListener('submit', function(event) {
+            event.preventDefault();
+
+            // Validate all IP/CIDR inputs first
+            let isValid = true;
+            const ipCidrInputs = document.querySelectorAll('input[type="text"][id$="Ip"], input[type="text"][id$="Cidr"], input[type="text"][id$="VIP"]');
+            ipCidrInputs.forEach(input => {
+                const errorMessageElement = document.getElementById(input.id + 'Error');
+                if (input.value && (input.id.includes('Cidr') ? !validateCidr(input.value) : !validateIp(input.value))) {
+                    errorMessageElement.textContent = 'Invalid IP address or CIDR format.';
+                    isValid = false;
+                } else {
+                    errorMessageElement.textContent = '';
+                }
+            });
+
+            if (!isValid) {
+                alert('Please fix the invalid IP/CIDR inputs.');
+                return;
+            }
+
+            const config = {
+                cluster_name: document.getElementById('clusterName').value,
+                domain_suffix: document.getElementById('domainSuffix').value,
+                
+                master_nodes_count: parseInt(document.getElementById('masterNodesCount').value, 10),
+                master_nodes_ips: getIpValues('masterIpsContainer'),
+
+                worker_nodes_count: parseInt(document.getElementById('workerNodesCount').value, 10),
+                worker_nodes_ips: getIpValues('workerIpsContainer'),
+
+                lb_nodes_count: parseInt(document.getElementById('lbNodesCount').value, 10),
+                lb_nodes_ips: getIpValues('lbIpsContainer'),
+                haproxy_vip: document.getElementById('haproxyVIP').value,
+                
+                ceph_mon_count: parseInt(document.getElementById('cephMonCount').value, 10),
+                ceph_mon_ips: getIpValues('cephMonIpsContainer'),
+
+                ceph_osd_count: parseInt(document.getElementById('cephOsdCount').value, 10),
+                ceph_osd_ips: getIpValues('cephOsdIpsContainer'),
+
+                ceph_public_network_cidr: document.getElementById('cephPublicCidr').value,
+                ceph_cluster_network_cidr: document.getElementById('cephClusterCidr').value,
+                ceph_fsid: document.getElementById('cephFsid').value || '' , // Use empty string if blank
+
+                ops_servers_linux_ip: document.getElementById('linuxOpsIp').value,
+                ops_servers_windows_ip: document.getElementById('windowsOpsIp').value,
+
+                registries_nexus_host_ip: document.getElementById('nexusHostIp').value,
+                registries_nexus_http_port: parseInt(document.getElementById('nexusHttpPort').value, 10),
+                registries_harbor_host_ip: document.getElementById('harborHostIp').value,
+                registries_pip_index_url: document.getElementById('pipIndex').value,
+
+                network_config_k8s_service_cidr: document.getElementById('k8sServiceCidr').value,
+                network_config_k8s_pod_cidr: document.getElementById('k8sPodCidr').value,
+                network_config_metallb_enabled: document.getElementById('metallbEnabled').checked,
+                network_config_metallb_ip_pool_start: document.getElementById('metallbStartIp').value,
+                network_config_metallb_ip_pool_end: document.getElementById('metallbEndIp').value,
+
+                ingress_external_ips: getIpValues('ingressExtIpsContainer'),
+                prometheus_external_ips: getIpValues('prometheusExtIpsContainer'),
+                grafana_ip: document.getElementById('grafanaIp').value,
+
+                storage_classes_cephfs: document.getElementById('cephfsSc').value,
+                storage_classes_rbd: document.getElementById('rbdSc').value,
+
+                minio_enabled: document.getElementById('minioEnabled').checked,
+                minio_api_host_ip: document.getElementById('minioApiHostIp').value,
+                minio_console_host_ip: document.getElementById('minioConsoleHostIp').value,
+                minio_root_user: document.getElementById('minioRootUser').value,
+                minio_root_password: document.getElementById('minioRootPassword').value,
+                minio_replication_enabled: document.getElementById('minioReplicationEnabled').checked,
+
+                dns_ntp_dns_server_ips: getIpValues('dnsServerIpsContainer'),
+                dns_ntp_ntp_servers: document.getElementById('ntpServers').value.split(' ').filter(n => n),
+
+                gitlab_enabled: document.getElementById('gitlabEnabled').checked,
+                gitlab_postgresql_host_ip: document.getElementById('gitlabPostgresqlHostIp').value,
+                gitlab_postgresql_password: document.getElementById('gitlabPostgresqlPassword').value,
+                gitlab_redis_host_ip: document.getElementById('gitlabRedisHostIp').value,
+                gitlab_redis_password: document.getElementById('gitlabRedisPassword').value,
+                gitlab_runner_token: document.getElementById('gitlabRunnerToken').value,
+
+                secrets_passwords_nexus_admin_password: document.getElementById('nexusAdminPassword').value,
+                secrets_passwords_harbor_admin_password: document.getElementById('harborAdminPassword').value,
+                secrets_passwords_harbor_db_password: document.getElementById('harborDbPassword').value,
+                secrets_passwords_harbor_redis_password: document.getElementById('harborRedisPassword').value,
+                secrets_passwords_grafana_admin_password: document.getElementById('grafanaAdminPassword').value,
+                secrets_passwords_smtp_password: document.getElementById('smtpPassword').value,
+                secrets_passwords_loki_s3_access_key: document.getElementById('lokiS3AccessKey').value,
+                secrets_passwords_loki_s3_secret_key: document.getElementById('lokiS3SecretKey').value,
+                secrets_passwords_velero_s3_access_key: document.getElementById('veleroS3AccessKey').value,
+                secrets_passwords_velero_s3_secret_key: document.getElementById('veleroS3SecretKey').value,
+                secrets_passwords_rancher_bootstrap_password: document.getElementById('rancherBootstrapPassword').value,
+                secrets_passwords_argocd_admin_password: document.getElementById('argocdAdminPassword').value,
+                secrets_passwords_haproxy_stats_password: document.getElementById('haproxyStatsPassword').value,
+                secrets_passwords_keepalived_auth_password: document.getElementById('keepalivedAuthPassword').value,
+
+                versions_kubernetes: document.getElementById('k8sVersion').value || 'latest',
+                versions_ceph: document.getElementById('cephVersion').value || 'latest',
+                versions_kubespray: document.getElementById('kubesprayVersion').value || 'latest',
+                versions_nexus: document.getElementById('nexusVersion').value || 'latest',
+                versions_harbor: document.getElementById('harborVersion').value || 'latest',
+                versions_gitlab: document.getElementById('gitlabVersion').value || 'latest',
+                
+                calico_config_ipip_mode: document.getElementById('calicoIpipMode').value,
+                calico_config_vxlan_mode: document.getElementById('calicoVxlanMode').value,
+                calico_config_bgp_enabled: document.getElementById('calicoBgpEnabled').checked
+            };
+
+            const yamlConfig = convertConfigToFlatYaml(config);
+            document.getElementById('generatedConfig').value = yamlConfig;
+            document.querySelector('.output-section').style.display = 'block';
+
+            // Scroll to output
+            document.querySelector('.output-section').scrollIntoView({ behavior: 'smooth' });
+        });
+
+        document.getElementById('downloadConfig').addEventListener('click', function() {
+            const configContent = document.getElementById('generatedConfig').value;
+            const clusterName = document.getElementById('clusterName').value;
+            const blob = new Blob([configContent], { type: 'text/yaml' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `${clusterName}-config.yml`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        });
+
+        // Simplified JSON to YAML conversion (for basic nested objects)
+        // Simple function to convert collected form data into a flat YAML-like string
+        function convertConfigToFlatYaml(config) {
+            let yamlOutput = '# Generated Configuration (config.yml)\n';
+            yamlOutput += '# This file contains raw input values from the wizard.\n';
+            yamlOutput += '# Use the "apply-config.sh" script to process this with Jinja2 templates.\n\n';
+
+            function appendToYaml(key, value) {
+                if (Array.isArray(value)) {
+                    yamlOutput += `${key}: [${value.map(item => JSON.stringify(item)).join(', ')}]\n`;
+                } else if (typeof value === 'object' && value !== null) {
+                    for (const subKey in value) {
+                        if (value.hasOwnProperty(subKey)) {
+                            appendToYaml(`${key}_${subKey}`, value[subKey]);
+                        }
+                    }
+                } else {
+                    yamlOutput += `${key}: ${JSON.stringify(value)}\n`;
+                }
+            }
+
+            for (const key in config) {
+                if (config.hasOwnProperty(key)) {
+                    appendToYaml(key, config[key]);
+                }
+            }
+            return yamlOutput;
+        }
+
+
+        // Initialize dynamic IP fields
+        setupDynamicIpFields('masterNodesCount', 'masterIpsContainer', '10.1.1.10', 'Master');
+        setupDynamicIpFields('workerNodesCount', 'workerIpsContainer', '10.1.2.10', 'Worker');
+        setupDynamicIpFields('lbNodesCount', 'lbIpsContainer', '10.1.0.10', 'LB');
+        setupDynamicIpFields('cephMonCount', 'cephMonIpsContainer', '10.1.3.10', 'Ceph MON');
+        setupDynamicIpFields('cephOsdCount', 'cephOsdIpsContainer', '10.1.4.10', 'Ceph OSD');
+        setupDynamicIpFields('ingressExtCount', 'ingressExtIpsContainer', '10.2.0.10', 'Ingress Ext');
+        setupDynamicIpFields('prometheusExtCount', 'prometheusExtIpsContainer', '10.2.0.30', 'Prometheus Ext');
+        setupDynamicIpFields('dnsServerCount', 'dnsServerIpsContainer', '10.1.0.1', 'DNS');
+        
+        // Initial call to set up derived fields and toggle sections
+        updateDerivedFields();
+    </script>
+</body>
+</html>
