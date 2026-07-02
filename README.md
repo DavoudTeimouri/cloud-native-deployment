@@ -10,7 +10,7 @@ The **Deployment Wizard** is an interactive step-by-step guide that asks you
 a few questions and generates personalized deployment commands. No prior
 Kubernetes experience required.
 
-**[→ Open the Deployment Wizard](https://davoudteimouri.github.io/cloud-native-deployment/wiki/wizard.html)**
+**[→ Open the Deployment Wizard](https://davoudteimouri.github.io/cloud-native-deployment/wizard/)**
 
 The wizard will help you choose:
 - Deployment target (VM or bare metal)
@@ -34,7 +34,7 @@ At the end, it generates:
 The **Wiki** explains every technology used in this deployment — what it does,
 how it works, and why we chose it. Perfect for learning and training.
 
-**[→ Open the Technology Wiki](https://davoudteimouri.github.io/cloud-native-deployment/wiki/)**
+**[→ Open the Technology Wiki](https://davoudteimouri.github.io/cloud-native-deployment/technology-wiki.html)**
 
 Topics covered:
 - Kubernetes, Ceph, Calico, Prometheus/Grafana, Loki, Velero
